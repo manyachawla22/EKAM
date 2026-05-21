@@ -27,7 +27,11 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Security(secu
             detail="Invalid mock token format"
         )
     try:
-        decoded_token = auth.verify_id_token(token)
+        # Add clock skew tolerance of 10 seconds
+        decoded_token = auth.verify_id_token(
+            token,
+            clock_skew_seconds=10  # ← Add this parameter
+        )
         return decoded_token
     except Exception as e:
         raise HTTPException(

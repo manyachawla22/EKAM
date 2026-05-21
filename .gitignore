@@ -72,3 +72,4 @@ postgres-data/
 
 # Logs
 *.log
+backend/requirements.txt

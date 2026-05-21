@@ -3,18 +3,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "EKAM Backend"
-    VERSION: str = "1.0.0"
-    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str 
+    VERSION: str 
+    API_V1_STR: str 
     
-    POSTGRES_SERVER: str = "localhost"
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "password"
-    POSTGRES_DB: str = "ekam"
-    POSTGRES_PORT: str = "5432"
+    POSTGRES_SERVER: str 
+    POSTGRES_USER: str 
+    POSTGRES_PASSWORD: str 
+    POSTGRES_DB: str 
+    POSTGRES_PORT: str 
+    DATABASE_URL: str
     
-    FIREBASE_CREDENTIALS_PATH:str = "ekam-aaa95-firebase-adminsdk-fbsvc-7f4e06ba47.json"
-    MOCK_AUTH: bool = False
+    FIREBASE_CREDENTIALS_PATH:str 
+    MOCK_AUTH: bool 
     
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
