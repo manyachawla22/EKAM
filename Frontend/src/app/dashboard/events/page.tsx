@@ -4,15 +4,78 @@ import { EventCard } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Search, Filter } from "lucide-react";
 import Link from "next/link";
+import { aiApi } from "@/lib/api";
+import type { Event, EventStage, Round } from "@/lib/mock-data";
+
+export function mapApiConfigToEvent(api: Record<string, any>): Event {
+  const phase: string = api.status?.current_phase || "draft";
+  const phases = ["draft", "ready", "registration_open", "registration_closed", "in_progress", "judging", "completed", "archived"];
+  const phaseIdx = phases.indexOf(phase);
+  const progress = phaseIdx <= 0 ? 5 : Math.round((phaseIdx / (phases.length - 1)) * 100);
+
+  const apiRounds: any[] = Array.isArray(api.rounds) ? api.rounds : [];
+  const rounds: Round[] = apiRounds.map((r: any, i: number) => ({
+    id: r.round_id || `r${i + 1}`,
+    name: r.round_name || `Round ${i + 1}`,
+    status: "upcoming" as const,
+    startDate: r.dates?.starts_at?.slice(0, 10) || "",
+    endDate: r.dates?.ends_at?.slice(0, 10) || "",
+    participantsAdvanced: 0,
+    totalParticipants: api.participants?.capacity?.max_participants || 0,
+  }));
+
+  const stages: EventStage[] = [
+    { id: "s1", name: "Registration", status: "upcoming", owner: "Organizer", completionPct: 0, lastUpdated: "-", description: "Open registration and collect participant details" },
+    ...apiRounds.map((r: any, i: number) => ({
+      id: `s${i + 2}`,
+      name: r.round_name || `Round ${i + 1}`,
+      status: "upcoming" as const,
+      owner: "Participant",
+      completionPct: 0,
+      lastUpdated: "-",
+      description: r.description || "",
+    })),
+    { id: `s${apiRounds.length + 2}`, name: "Results", status: "upcoming", owner: "Organizer", completionPct: 0, lastUpdated: "-", description: "Winner announcement and prizes" },
+  ];
+
+  return {
+    id: api.event_id || api.id || "",
+    hash: api.hash || "",
+    name: api.core?.name || "Untitled Event",
+    type: api.core?.event_type || "hackathon",
+    status: phase === "completed" || phase === "archived" ? "completed" : phase === "draft" ? "draft" : "active",
+    stage: phase.replace(/_/g, " "),
+    participantCount: 0,
+    judgeCount: (api.judging_panel?.judges || []).length,
+    teamCount: 0,
+    maxParticipants: api.participants?.capacity?.max_participants || 0,
+    approvalStatus: "pending",
+    progress,
+    createdAt: api.status?.created_at?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+    updatedAt: api.status?.updated_at?.slice(0, 10) || new Date().toISOString().slice(0, 10),
+    description: api.core?.description || "",
+    stages,
+    rounds,
+  };
+}
 
 export default function EventsPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [deployedEvents, setDeployedEvents] = useState<Event[]>([]);
 
-  const filtered = mockEvents.filter((e) => {
+  useEffect(() => {
+    aiApi.getDeployedEvents()
+      .then((data: any[]) => setDeployedEvents(data.map(mapApiConfigToEvent)))
+      .catch(() => {});
+  }, []);
+
+  const allEvents = [...deployedEvents, ...mockEvents];
+
+  const filtered = allEvents.filter((e) => {
     const matchSearch = e.name.toLowerCase().includes(search.toLowerCase());
     const matchStatus = statusFilter === "all" || e.status === statusFilter;
     return matchSearch && matchStatus;

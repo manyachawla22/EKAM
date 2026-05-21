@@ -1,116 +1,184 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import { Send, Bot, User, Sparkles, Eye, Save, Rocket, Loader2, Check } from "lucide-react";
+import { Send, Bot, User, Sparkles, Save, Rocket, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { aiApi } from "@/lib/api";
 
-interface Message { role: "assistant" | "user"; content: string; }
+interface Message {
+  role: "assistant" | "user";
+  content: string;
+}
 
-const wizardSteps = [
-  { question: "What would you like to name your event?", field: "name", placeholder: "e.g., HackSphere 2026" },
-  { question: "What type of event is this?", field: "type", placeholder: "Hackathon, Case Competition, Coding Contest..." },
-  { question: "How many participants per team?", field: "teamSize", placeholder: "e.g., 3-5" },
-  { question: "What stages will your event have? (comma separated)", field: "stages", placeholder: "e.g., Registration, Screening, OA, Hackathon, Judging" },
-  { question: "What are the key rules?", field: "rules", placeholder: "e.g., No plagiarism, 48-hour time limit..." },
-  { question: "How should participants be evaluated? (evaluation model)", field: "evaluation", placeholder: "e.g., Rubric-based judging, peer review..." },
-  { question: "Any submission requirements?", field: "submissions", placeholder: "e.g., GitHub repo, demo video, pitch deck..." },
-  { question: "Communication preferences? (email, WhatsApp, Discord)", field: "comms", placeholder: "e.g., Email + Discord" },
-];
+interface EventConfig {
+  event_id?: string;
+  core?: {
+    name?: string;
+    event_type?: string;
+    theme?: string;
+    mode?: string;
+    description?: string;
+    venue?: { name?: string; city?: string; country?: string };
+    contact?: { email?: string; phone?: string };
+  };
+  timeline?: {
+    registration?: { opens_at?: string; closes_at?: string };
+    key_dates?: { name: string; date: string }[];
+  };
+  participants?: {
+    team?: { min_size?: number; max_size?: number };
+    capacity?: { max_teams?: number; max_participants?: number };
+    eligibility?: { open_to?: string[] };
+  };
+  rounds?: { round_name?: string; type?: string }[];
+  judging_panel?: { judges?: { name: string }[] };
+  prizes?: { total_pool?: string; distribution?: { rank: number; title: string; amount: string }[] };
+  [key: string]: unknown;
+}
+
+const INITIAL_MESSAGE =
+  "Hi! I'm Ekam's event builder AI.\n\nDescribe your event in as much detail as you'd like — the more you share upfront, the less I'll need to ask. For example:\n\n\"Run a case competition. 50 teams of 4. Theme: Sustainable Supply Chain. Two rounds: Prelims (slide deck + executive summary), Finals (live presentation). Scoring: Problem Analysis 25%, Solution 35%, Feasibility 20%, Presentation 20%. Top 10 to finals. 3 industry judges. Registration opens next Monday for 10 days, prelims submission 7 days later, finals on last Saturday. Prize pool ₹50,000.\"\n\nOr just start with the basics and we'll build from there!";
+
+function SummaryRow({ label, value }: { label: string; value?: string | number }) {
+  if (!value && value !== 0) return null;
+  return (
+    <div className="flex items-start justify-between gap-3 py-1.5 border-b border-border/20 last:border-0">
+      <span className="text-[11px] text-muted-foreground shrink-0">{label}</span>
+      <span className="text-[11px] font-medium text-right truncate max-w-[160px]">{value}</span>
+    </div>
+  );
+}
 
 export default function CreateEventPage() {
+  const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: "👋 Hi! I'm the Ekam configuration assistant. I'll help you set up your event step by step. Let's start — what would you like to name your event?" },
+    { role: "assistant", content: INITIAL_MESSAGE },
   ]);
   const [input, setInput] = useState("");
-  const [step, setStep] = useState(0);
-  const [config, setConfig] = useState<Record<string, string>>({});
+  const [config, setConfig] = useState<EventConfig>({});
+  const [eventId, setEventId] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
+  const [isComplete, setIsComplete] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
+  }, [messages, typing]);
 
   const handleSend = async () => {
-    if (!input.trim()) return;
-    const userMsg = input.trim();
+    const text = input.trim();
+    if (!text || typing) return;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setError(null);
 
-    const currentStep = wizardSteps[step];
-    if (currentStep) {
-      setConfig((prev) => ({ ...prev, [currentStep.field]: userMsg }));
-    }
-
+    const updatedMessages: Message[] = [...messages, { role: "user", content: text }];
+    setMessages(updatedMessages);
     setTyping(true);
-    await new Promise((r) => setTimeout(r, 800 + Math.random() * 700));
-    setTyping(false);
 
-    const nextStep = step + 1;
-    if (nextStep < wizardSteps.length) {
-      const ack = getAck(step, userMsg);
-      setMessages((prev) => [...prev, { role: "assistant", content: `${ack}\n\n${wizardSteps[nextStep].question}` }]);
-      setStep(nextStep);
-    } else {
-      setMessages((prev) => [...prev, {
-        role: "assistant",
-        content: "🎉 Excellent! I've captured all the details. Your event configuration is ready! You can preview the schema, save as draft, or deploy the event using the buttons on the right panel.",
-      }]);
-      setStep(nextStep);
+    try {
+      const apiMessages = updatedMessages.map((m) => ({ role: m.role, content: m.content }));
+      const result = await aiApi.chat(apiMessages, eventId);
+
+      const aiMessage: string = result.message ?? "Got it!";
+      const newConfig: EventConfig = result.event_config ?? config;
+      const complete: boolean = result.is_complete ?? false;
+
+      if (result.event_id) setEventId(result.event_id);
+      setConfig(newConfig);
+      setIsComplete(complete);
+      setMessages((prev) => [...prev, { role: "assistant", content: aiMessage }]);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Something went wrong. Is the backend running?";
+      setError(msg);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "⚠️ " + msg },
+      ]);
+    } finally {
+      setTyping(false);
     }
   };
 
-  const getAck = (s: number, val: string): string => {
-    const acks = [
-      `Great name! "${val}" sounds like an exciting event.`,
-      `Perfect — a ${val} it is!`,
-      `Got it, ${val} members per team.`,
-      `Nice pipeline! I've mapped out the stages.`,
-      `Rules noted and configured.`,
-      `Evaluation model set to: ${val}.`,
-      `Submission requirements captured.`,
-      `Communication channels configured.`,
-    ];
-    return acks[s] || "Got it!";
+  const handleSaveDraft = async () => {
+    if (Object.keys(config).length === 0) return;
+    setSaving(true);
+    try {
+      const result = await aiApi.saveConfig(config, eventId);
+      toast.success(`Draft saved! (${result.filename})`);
+    } catch {
+      toast.error("Failed to save draft.");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const isComplete = step >= wizardSteps.length;
+  const handleDeploy = async () => {
+    if (!isComplete) return;
+    setSaving(true);
+    try {
+      const result = await aiApi.deploy(config, eventId);
+      toast.success(`Event deployed! Hash: ${result.hash}`);
+      router.push("/dashboard/events");
+    } catch {
+      toast.error("Failed to deploy event.");
+      setSaving(false);
+    }
+  };
+
+  const hasConfig = Object.keys(config).length > 0;
+  const configJson = JSON.stringify(config, null, 2);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Create New Event</h1>
-        <p className="text-sm text-muted-foreground">Use our intelligent wizard to configure your event step by step.</p>
+        <p className="text-sm text-muted-foreground">Describe your event — our AI will build the full configuration.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Chat */}
-        <Card className="lg:col-span-3 border-border/50 bg-card/80 backdrop-blur-sm flex flex-col h-[600px]">
-          <CardHeader className="pb-3 border-b border-border/30">
-            <div className="flex items-center gap-2">
-              <div className="h-7 w-7 rounded-lg bg-primary/10 flex items-center justify-center">
-                <Sparkles className="h-4 w-4 text-primary" />
+        {/* Chat panel */}
+        <Card className="lg:col-span-3 border-border/50 bg-card/80 backdrop-blur-sm flex flex-col h-[640px]">
+          <CardHeader className="pb-3 border-b border-border/30 shrink-0">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="h-7 w-7 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                </div>
+                <div>
+                  <CardTitle className="text-sm">Ekam Event Builder</CardTitle>
+                  <p className="text-[10px] text-muted-foreground">Powered by Gemini</p>
+                </div>
               </div>
-              <div>
-                <CardTitle className="text-sm">Ekam Configuration Assistant</CardTitle>
-                <p className="text-[10px] text-muted-foreground">Step {Math.min(step + 1, wizardSteps.length)} of {wizardSteps.length}</p>
-              </div>
+              {isComplete && (
+                <div className="flex items-center gap-1.5 text-emerald-500">
+                  <CheckCircle2 className="h-4 w-4" />
+                  <span className="text-xs font-medium">Config complete</span>
+                </div>
+              )}
+              {error && !isComplete && (
+                <div className="flex items-center gap-1.5 text-destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <span className="text-xs">Backend unreachable</span>
+                </div>
+              )}
             </div>
           </CardHeader>
-          <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+
+          <div className="flex-1 p-4 overflow-y-auto min-h-0" ref={scrollRef}>
             <div className="space-y-4">
-              <AnimatePresence>
+              <AnimatePresence initial={false}>
                 {messages.map((msg, i) => (
                   <motion.div
                     key={i}
-                    initial={{ opacity: 0, y: 10 }}
+                    initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.2 }}
                     className={`flex gap-3 ${msg.role === "user" ? "justify-end" : ""}`}
                   >
                     {msg.role === "assistant" && (
@@ -118,11 +186,13 @@ export default function CreateEventPage() {
                         <Bot className="h-3.5 w-3.5 text-primary" />
                       </div>
                     )}
-                    <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-line ${
-                      msg.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-br-md"
-                        : "bg-muted/50 rounded-bl-md"
-                    }`}>
+                    <div
+                      className={`max-w-[82%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-line leading-relaxed ${
+                        msg.role === "user"
+                          ? "bg-primary text-primary-foreground rounded-br-md"
+                          : "bg-muted/50 rounded-bl-md"
+                      }`}
+                    >
                       {msg.content}
                     </div>
                     {msg.role === "user" && (
@@ -133,12 +203,13 @@ export default function CreateEventPage() {
                   </motion.div>
                 ))}
               </AnimatePresence>
+
               {typing && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-3">
                   <div className="rounded-full bg-primary/10 h-7 w-7 flex items-center justify-center shrink-0">
                     <Bot className="h-3.5 w-3.5 text-primary" />
                   </div>
-                  <div className="bg-muted/50 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1">
+                  <div className="bg-muted/50 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1 items-center">
                     <span className="w-1.5 h-1.5 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
                     <span className="w-1.5 h-1.5 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
                     <span className="w-1.5 h-1.5 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
@@ -146,99 +217,107 @@ export default function CreateEventPage() {
                 </motion.div>
               )}
             </div>
-          </ScrollArea>
-          <div className="p-4 border-t border-border/30">
-            <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="flex gap-2">
+          </div>
+
+          <div className="p-4 border-t border-border/30 shrink-0">
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleSend(); }}
+              className="flex gap-2"
+            >
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder={wizardSteps[step]?.placeholder || "Type your response..."}
-                disabled={isComplete}
+                placeholder={
+                  isComplete
+                    ? "Config ready — keep chatting to refine or correct anything"
+                    : "Describe your event or answer the question..."
+                }
+                disabled={typing}
                 className="flex-1"
               />
-              <Button type="submit" size="icon" disabled={isComplete || typing}>
-                <Send className="h-4 w-4" />
+              <Button type="submit" size="icon" disabled={typing || !input.trim()}>
+                {typing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </form>
           </div>
         </Card>
 
-        {/* Side panel */}
+        {/* Right panel */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Summary */}
+          {/* Live summary */}
           <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-            <CardHeader className="pb-3">
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm">Event Summary</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {wizardSteps.map((ws) => (
-                <div key={ws.field} className="flex items-start justify-between gap-2">
-                  <span className="text-xs text-muted-foreground capitalize">{ws.field.replace(/([A-Z])/g, " $1")}</span>
-                  {config[ws.field] ? (
-                    <Badge variant="outline" className="text-[10px] max-w-[180px] truncate">{config[ws.field]}</Badge>
-                  ) : (
-                    <span className="text-[10px] text-muted-foreground/50 italic">Not set</span>
-                  )}
+            <CardContent>
+              {!hasConfig ? (
+                <p className="text-[11px] text-muted-foreground italic text-center py-3">
+                  Start chatting to see your event config appear here.
+                </p>
+              ) : (
+                <div className="space-y-0.5">
+                  <SummaryRow label="Name" value={config.core?.name} />
+                  <SummaryRow label="Type" value={config.core?.event_type} />
+                  <SummaryRow label="Theme" value={config.core?.theme} />
+                  <SummaryRow label="Mode" value={config.core?.mode} />
+                  <SummaryRow
+                    label="Team size"
+                    value={
+                      config.participants?.team?.min_size != null
+                        ? `${config.participants.team.min_size}–${config.participants.team.max_size}`
+                        : undefined
+                    }
+                  />
+                  <SummaryRow label="Max teams" value={config.participants?.capacity?.max_teams} />
+                  <SummaryRow
+                    label="Eligibility"
+                    value={[config.participants?.eligibility?.open_to].flat().filter(Boolean).join(", ")}
+                  />
+                  <SummaryRow label="Rounds" value={config.rounds?.length} />
+                  <SummaryRow label="Judges" value={config.judging_panel?.judges?.length} />
+                  <SummaryRow label="Prize pool" value={config.prizes?.total_pool} />
+                  <SummaryRow label="Contact" value={config.core?.contact?.email} />
+                  <SummaryRow
+                    label="Venue"
+                    value={config.core?.venue?.city}
+                  />
+                  <SummaryRow label="Reg opens" value={config.timeline?.registration?.opens_at?.slice(0, 10)} />
+                  <SummaryRow label="Reg closes" value={config.timeline?.registration?.closes_at?.slice(0, 10)} />
                 </div>
-              ))}
+              )}
             </CardContent>
           </Card>
 
-          {/* JSON Preview */}
+          {/* JSON preview */}
           <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-            <CardHeader className="pb-3">
+            <CardHeader className="pb-2">
               <CardTitle className="text-sm">Schema Preview</CardTitle>
             </CardHeader>
             <CardContent>
-              <pre className="text-[10px] font-mono bg-muted/30 rounded-xl p-3 overflow-auto max-h-48 text-muted-foreground">
-                {JSON.stringify({
-                  eventId: "EF-" + Math.random().toString(36).substr(2, 6).toUpperCase(),
-                  ...config,
-                  createdAt: new Date().toISOString(),
-                  status: "draft",
-                }, null, 2)}
+              <pre className="text-[10px] font-mono bg-muted/30 rounded-xl p-3 overflow-auto max-h-52 text-muted-foreground leading-relaxed">
+                {hasConfig ? configJson : '{\n  // Config will appear here\n}'}
               </pre>
             </CardContent>
           </Card>
 
           {/* Actions */}
           <div className="space-y-2">
-            <Dialog>
-              <DialogTrigger render={
-                <Button variant="outline" className="w-full" disabled={Object.keys(config).length === 0} />
-              }>
-                <Eye className="h-4 w-4 mr-2" />Preview Configuration
-              </DialogTrigger>
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle>Event Configuration Preview</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4 mt-4">
-                  {Object.entries(config).map(([key, val]) => (
-                    <div key={key} className="flex items-start justify-between border-b border-border/30 pb-2">
-                      <span className="text-sm font-medium capitalize">{key.replace(/([A-Z])/g, " $1")}</span>
-                      <span className="text-sm text-muted-foreground text-right max-w-[60%]">{val}</span>
-                    </div>
-                  ))}
-                  {Object.keys(config).length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">No configuration data yet. Answer the assistant&apos;s questions to build your event schema.</p>
-                  )}
-                </div>
-              </DialogContent>
-            </Dialog>
             <Button
-              variant="outline" className="w-full"
-              onClick={() => { toast.success("Draft saved successfully!"); }}
-              disabled={Object.keys(config).length === 0}
+              variant="outline"
+              className="w-full"
+              onClick={handleSaveDraft}
+              disabled={!hasConfig || saving}
             >
-              <Save className="h-4 w-4 mr-2" />Save Draft
+              {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+              Save Draft
             </Button>
             <Button
               className="w-full bg-primary hover:bg-primary/90"
-              onClick={() => { toast.success("Event deployed! Redirecting..."); }}
-              disabled={!isComplete}
+              onClick={handleDeploy}
+              disabled={!isComplete || saving}
             >
-              <Rocket className="h-4 w-4 mr-2" />Deploy Event
+              {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Rocket className="h-4 w-4 mr-2" />}
+              Deploy Event
             </Button>
           </div>
         </div>
