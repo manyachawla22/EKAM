@@ -23,9 +23,11 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 async def startup_db_client():
-    # Only for development, use Alembic in production
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        print(f"[startup] DB unavailable, skipping table creation: {e}")
 
 @app.get("/")
 def root():

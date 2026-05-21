@@ -101,3 +101,23 @@ export const reportsApi = {
   generate: async (data: any) => apiCall("/reports/generate", { method: "POST", body: JSON.stringify(data) }),
   getByEvent: async (eventId: string) => apiCall(`/reports/${eventId}`)
 };
+
+export const aiApi = {
+  chat: async (messages: { role: string; content: string }[], event_id?: string | null) =>
+    apiCall("/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({ messages, event_id: event_id || undefined }),
+    }),
+  saveConfig: async (event_config: Record<string, any>, event_id?: string | null) =>
+    apiCall("/ai/save-config", {
+      method: "POST",
+      body: JSON.stringify({ event_config, event_id: event_id || undefined }),
+    }),
+  deploy: async (event_config: Record<string, any>, event_id?: string | null) =>
+    apiCall("/ai/deploy", {
+      method: "POST",
+      body: JSON.stringify({ event_config, event_id: event_id || undefined }),
+    }),
+  getDeployedEvents: async () => apiCall("/ai/events"),
+  getEventByHash: async (hash: string) => apiCall(`/ai/events/${hash}`),
+};

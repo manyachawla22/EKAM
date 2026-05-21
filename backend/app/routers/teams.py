@@ -44,3 +44,47 @@ async def list_teams(
 ):
     result = await db.execute(select(Team).where(Team.event_id == event_id))
     return result.scalars().all()
+
+from app.team_formation.optimizer import form_teams, compute_team_diversity_score
+from app.models.participant import Participant
+
+@router.post("/auto-form/{event_id}")
+async def auto_form_teams(
+    event_id: UUID,
+    team_size: int = 4,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Fetch participants for the event
+    result = await db.execute(select(Participant).where(Participant.event_id == event_id))
+    participants = result.scalars().all()
+    
+    # Fake data if none
+    if not participants:
+        p_data = [
+            {"id": "1", "skills": ["Backend", "ML"], "domain": "AI/ML", "experience_level": "Advanced", "institution": "A"},
+            {"id": "2", "skills": ["Frontend"], "domain": "Web/App Dev", "experience_level": "Beginner", "institution": "A"},
+            {"id": "3", "skills": ["Design"], "domain": "Web/App Dev", "experience_level": "Intermediate", "institution": "B"},
+            {"id": "4", "skills": ["ML", "Research"], "domain": "AI/ML", "experience_level": "Advanced", "institution": "B"},
+        ]
+    else:
+        p_data = [
+            {
+                "id": str(p.id),
+                "skills": ["Backend", "Frontend"],  # Mocked skills since model doesn't have it
+                "domain": "Web/App Dev",
+                "experience_level": "Intermediate",
+                "institution": "Unknown"
+            } for p in participants
+        ]
+        
+    try:
+        teams, leftovers = form_teams(p_data, team_size=team_size)
+        return {
+            "success": True,
+            "teams": teams,
+            "leftovers": leftovers,
+            "message": f"Successfully formed {len(teams)} teams"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

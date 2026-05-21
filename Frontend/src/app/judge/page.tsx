@@ -1,4 +1,5 @@
 "use client";
+import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { useState } from "react";
 import { mockSubmissions, mockEvents, mockJudges } from "@/lib/mock-data";
 import { ApprovalBadge } from "@/components/approval-badge";
@@ -38,6 +39,7 @@ export default function JudgeDashboard() {
   const totalScore = rubricCriteria.reduce((sum, c) => sum + (getScore(c.name) * c.weight / 100), 0);
 
   return (
+    <ProtectedRoute allowedRoles={["judge", "admin"]}>
     <div className="min-h-screen">
       {/* Navbar */}
       <nav className="sticky top-0 z-50 border-b border-border/50 bg-background/80 backdrop-blur-xl">
@@ -239,11 +241,17 @@ export default function JudgeDashboard() {
                     </div>
                   </div>
                 )}
-              </CardContent>
+                </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
       </div>
+      <EvaluationModal 
+        isOpen={isEvalModalOpen} 
+        onClose={() => setIsEvalModalOpen(false)} 
+        submission={evaluatingSubmission} 
+      />
     </div>
+    </ProtectedRoute>
   );
 }

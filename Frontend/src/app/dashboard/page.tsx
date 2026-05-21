@@ -25,8 +25,21 @@ const activityColors: Record<string, string> = {
   event: "text-primary bg-primary/10",
 };
 
+import { useState, useEffect } from "react";
+import { aiApi } from "@/lib/api";
+import { mapApiConfigToEvent } from "./events/page";
+import type { Event } from "@/lib/mock-data";
+
 export default function DashboardPage() {
-  const activeEvent = mockEvents.find((e) => e.status === "active");
+  const [events, setEvents] = useState<Event[]>([]);
+  
+  useEffect(() => {
+    aiApi.getDeployedEvents()
+      .then((data: any[]) => setEvents(data.map(mapApiConfigToEvent)))
+      .catch(() => { });
+  }, []);
+
+  const activeEvent = events.find((e) => e.status === "active") || events[0];
 
   return (
     <div className="space-y-6">
@@ -43,8 +56,8 @@ export default function DashboardPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        <StatCard title="Total Events" value={mockEvents.length} icon={Calendar} trend={{ value: 12, positive: true }} gradient="bg-primary/10" />
-        <StatCard title="Active Events" value={mockEvents.filter((e) => e.status === "active").length} icon={Activity} />
+        <StatCard title="Total Events" value={events.length} icon={Calendar} trend={{ value: 12, positive: true }} gradient="bg-primary/10" />
+        <StatCard title="Active Events" value={events.filter((e) => e.status === "active").length} icon={Activity} />
         <StatCard title="Pending Approvals" value={1} icon={Clock} trend={{ value: 5, positive: false }} />
         <StatCard title="Participants" value="522" icon={Users} trend={{ value: 18, positive: true }} />
         <StatCard title="Judges Assigned" value="25" icon={Gavel} />
@@ -62,12 +75,14 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {activeEvent && (
+            {activeEvent ? (
               <PipelineStepper
                 steps={activeEvent.stages.map((s) => ({
                   id: s.id, name: s.name, status: s.status, completionPct: s.completionPct,
                 }))}
               />
+            ) : (
+              <p className="text-sm text-muted-foreground">No active events found.</p>
             )}
           </CardContent>
         </Card>
@@ -109,7 +124,7 @@ export default function DashboardPage() {
             </Button>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {mockEvents.map((event, i) => (
+            {events.slice(0, 4).map((event, i) => (
               <EventCard key={event.id} event={event} index={i} />
             ))}
           </div>

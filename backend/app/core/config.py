@@ -14,8 +14,11 @@ class Settings(BaseSettings):
     POSTGRES_PORT: str 
     DATABASE_URL: str
     
-    FIREBASE_CREDENTIALS_PATH:str 
-    MOCK_AUTH: bool 
+    FIREBASE_CREDENTIALS_PATH:str
+    MOCK_AUTH: bool
+     
+    GROQ_API_KEY: str 
+    GROQ_MODEL: str
     
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:

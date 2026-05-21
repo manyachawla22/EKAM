@@ -28,26 +28,32 @@ async def login(
     """
     uid = token_data.get("uid")
     email = token_data.get("email") or ""
+    firebase_name = token_data.get("name") or token_data.get("display_name")
     
     # Check if user exists in db
     result = await db.execute(select(User).where(User.firebase_uid == uid))
     user = result.scalars().first()
 
+    from datetime import datetime, timezone
+    
     if not user:
         # Create new user
         role = request_data.role if request_data and request_data.role else "participant"
-        name = request_data.name if request_data and request_data.name else email.split('@')[0] if email else "User"
+        name = request_data.name if request_data and request_data.name else (firebase_name or (email.split('@')[0] if email else "User"))
         
-        new_user = User(
+        user = User(
             firebase_uid=uid,
             email=email,
             name=name,
-            role=UserRole(role)
+            role=UserRole(role),
+            last_login=datetime.now(timezone.utc)
         )
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-        user = new_user
+        db.add(user)
+    else:
+        user.last_login = datetime.now(timezone.utc)
+        
+    await db.commit()
+    await db.refresh(user)
 
     return user
 

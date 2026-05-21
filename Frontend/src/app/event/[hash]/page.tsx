@@ -1,6 +1,7 @@
 "use client";
-import { use } from "react";
+import { use, useState, useEffect } from "react";
 import { mockEvents, mockParticipants, mockJudges, mockSubmissions } from "@/lib/mock-data";
+import { mapApiConfigToEvent } from "@/app/dashboard/events/page";
 import { PipelineStepper } from "@/components/pipeline-stepper";
 import { ApprovalBadge } from "@/components/approval-badge";
 import { StatCard } from "@/components/stat-card";
@@ -10,33 +11,63 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { aiApi } from "@/lib/api";
 import {
-  Users, Gavel, Calendar, Hash, ArrowRight, Clock, Mail, AlertTriangle,
-  FileText, CheckCircle2, Play, Eye, Send, BarChart3, Trophy,
-  MessageSquare, Globe, Layers, Clipboard, UserCheck, Sparkles, Activity
+  Users, Gavel, FileText, AlertTriangle,
+  CheckCircle2, Play, Eye, Send, Trophy,
+  MessageSquare, Globe, Mail, Clock, ArrowRight,
+  Activity, Sparkles,
 } from "lucide-react";
 
 export default function EventDetailPage({ params }: { params: Promise<{ hash: string }> }) {
   const { hash } = use(params);
-  const event = mockEvents.find((e) => e.hash === hash) || mockEvents[0];
-  const eventParticipants = mockParticipants.slice(0, event.participantCount > 20 ? 20 : event.participantCount);
+
+  const [apiEvent, setApiEvent] = useState<Record<string, any> | null>(null);
+  const [loadingApi, setLoadingApi] = useState(true);
+
+  useEffect(() => {
+    aiApi.getEventByHash(hash)
+      .then((data: Record<string, any>) => setApiEvent(data))
+      .catch(() => { })
+      .finally(() => setLoadingApi(false));
+  }, [hash]);
+
+  // Prefer live API data; fall back to mock for demo events
+  const mockEvent = mockEvents.find((e) => e.hash === hash) || mockEvents[0];
+  const event = apiEvent ? mapApiConfigToEvent(apiEvent) : mockEvent;
+
+  const eventParticipants = mockParticipants.slice(0, Math.min(event.participantCount || 6, 20));
   const eventJudges = mockJudges.filter((j) => j.assignedEvents.includes(event.hash));
   const eventSubs = mockSubmissions.filter((s) => s.eventHash === event.hash);
 
+  // ── Derived from API config when available ─────────────────────────────────
+  const venue = apiEvent?.core?.venue;
+  const contact = apiEvent?.core?.contact;
+  const prizes = apiEvent?.prizes;
+  const keyDates: { name: string; date: string; description: string }[] =
+    apiEvent?.timeline?.key_dates || [];
+  const regOpens = apiEvent?.timeline?.registration?.opens_at;
+  const regCloses = apiEvent?.timeline?.registration?.closes_at;
+  const apiJudges: any[] = apiEvent?.judging_panel?.judges || [];
+  const apiRounds: any[] = apiEvent?.rounds || [];
+  const theme = apiEvent?.core?.theme || "";
+  const mode = apiEvent?.core?.mode || "";
+
   const workflowStages = [
-    { name: "Registration", status: "completed" as const, owner: "Organizer", count: `${event.participantCount}/${event.maxParticipants}`, pct: Math.round((event.participantCount / event.maxParticipants) * 100), lastUpdated: "2026-04-20", actions: ["View Registrations"] },
-    { name: "Resume Screening", status: "completed" as const, owner: "System", count: "400 screened", pct: 100, lastUpdated: "2026-04-25", actions: ["View ATS Scores"] },
-    { name: "Online Assessment", status: "completed" as const, owner: "System", count: "342 passed", pct: 100, lastUpdated: "2026-05-01", actions: ["View Results"] },
-    { name: "Team Formation", status: "completed" as const, owner: "Participant", count: `${event.teamCount} teams`, pct: 100, lastUpdated: "2026-05-05", actions: ["View Teams"] },
-    { name: "Theme Selection", status: "completed" as const, owner: "Organizer", count: "8 themes", pct: 100, lastUpdated: "2026-05-08", actions: ["View Themes"] },
-    { name: "Hacking Phase", status: "active" as const, owner: "Participant", count: "45% complete", pct: 45, lastUpdated: "2026-05-18", actions: ["Monitor Progress"] },
-    { name: "Submission", status: "upcoming" as const, owner: "Participant", count: "0 submitted", pct: 0, lastUpdated: "-", actions: ["Configure"] },
-    { name: "Judging", status: "upcoming" as const, owner: "Judge", count: "0 reviewed", pct: 0, lastUpdated: "-", actions: ["Assign Judges"] },
+    { name: "Registration", status: "upcoming" as const, owner: "Organizer", count: `0/${event.maxParticipants || "?"}`, pct: 0, lastUpdated: regOpens?.slice(0, 10) || "-", actions: ["View Registrations"] },
+    ...apiRounds.map((r: any) => ({
+      name: r.round_name || "Round",
+      status: "upcoming" as const,
+      owner: "Participant",
+      count: "Not started",
+      pct: 0,
+      lastUpdated: r.dates?.starts_at?.slice(0, 10) || "-",
+      actions: ["View Details"],
+    })),
     { name: "Results", status: "upcoming" as const, owner: "Organizer", count: "-", pct: 0, lastUpdated: "-", actions: ["Configure"] },
   ];
 
@@ -45,6 +76,18 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
     active: "bg-blue-500/10 text-blue-500",
     upcoming: "bg-muted text-muted-foreground",
   };
+
+  if (loadingApi) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="flex gap-1">
+          {[0, 1, 2].map((i) => (
+            <span key={i} className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: `${i * 150}ms` }} />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen">
@@ -69,11 +112,11 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
         {/* Header stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           <StatCard title="Participants" value={event.participantCount} icon={Users} />
-          <StatCard title="Teams" value={event.teamCount} icon={Users} />
-          <StatCard title="Judges" value={event.judgeCount} icon={Gavel} />
-          <StatCard title="Submissions" value={eventSubs.length} icon={FileText} />
+          <StatCard title="Teams" value={event.teamCount || event.maxParticipants ? `0/${apiEvent?.participants?.capacity?.max_teams || "?"}` : 0} icon={Users} />
+          <StatCard title="Judges" value={apiJudges.length || event.judgeCount} icon={Gavel} />
+          <StatCard title="Rounds" value={apiRounds.length || event.rounds.length} icon={FileText} />
           <StatCard title="Progress" value={`${event.progress}%`} icon={Activity} />
-          <StatCard title="Anomalies" value="1" icon={AlertTriangle} />
+          <StatCard title="Prize Pool" value={prizes?.total_pool || "—"} icon={Trophy} />
         </div>
 
         {/* Pipeline */}
@@ -86,10 +129,10 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
           </CardContent>
         </Card>
 
-        {/* Main content tabs */}
+        {/* Tabs */}
         <Tabs defaultValue="overview" className="space-y-4">
           <TabsList className="flex-wrap h-auto gap-1 bg-transparent p-0">
-            {["overview", "workflow", "teams", "judges", "submissions", "rounds", "comms"].map((t) => (
+            {["overview", "workflow", "rounds", "judges", "prizes", "teams", "submissions", "comms"].map((t) => (
               <TabsTrigger key={t} value={t} className="capitalize data-[state=active]:bg-primary/10 data-[state=active]:text-primary rounded-lg px-3 py-1.5 text-xs">
                 {t}
               </TabsTrigger>
@@ -103,52 +146,56 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
                 <CardHeader><CardTitle className="text-base">Event Overview</CardTitle></CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">{event.description}</p>
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
                     <div><span className="text-muted-foreground">Type:</span> <span className="font-medium ml-1">{event.type}</span></div>
                     <div><span className="text-muted-foreground">Hash:</span> <span className="font-mono font-medium ml-1">{event.hash}</span></div>
+                    {theme && <div><span className="text-muted-foreground">Theme:</span> <span className="font-medium ml-1">{theme}</span></div>}
+                    {mode && <div><span className="text-muted-foreground">Mode:</span> <span className="font-medium ml-1 capitalize">{mode}</span></div>}
                     <div><span className="text-muted-foreground">Created:</span> <span className="font-medium ml-1">{event.createdAt}</span></div>
                     <div><span className="text-muted-foreground">Updated:</span> <span className="font-medium ml-1">{event.updatedAt}</span></div>
+                    {venue?.city && <div><span className="text-muted-foreground">Venue:</span> <span className="font-medium ml-1">{[venue.name, venue.city, venue.country].filter(Boolean).join(", ")}</span></div>}
+                    {contact?.email && <div><span className="text-muted-foreground">Contact:</span> <span className="font-medium ml-1">{contact.email}</span></div>}
+                    {contact?.phone && <div><span className="text-muted-foreground">Phone:</span> <span className="font-medium ml-1">{contact.phone}</span></div>}
                   </div>
                 </CardContent>
               </Card>
-              {/* Sticky panel */}
+
               <Card className="border-border/50 bg-card/80 backdrop-blur-sm border-primary/20">
                 <CardHeader><CardTitle className="text-base">Quick Status</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
                   {[
-                    { label: "Current Stage", value: event.stage, icon: Activity, color: "text-primary" },
-                    { label: "Next Action", value: "Collect Submissions", icon: ArrowRight, color: "text-amber-500" },
-                    { label: "Pending Approvals", value: "0", icon: Clock, color: "text-emerald-500" },
-                    { label: "Comms Status", value: "342 emails sent", icon: Mail, color: "text-blue-500" },
-                    { label: "Anomalies", value: "1 flagged", icon: AlertTriangle, color: "text-red-400" },
+                    { label: "Current Phase", value: event.stage, icon: Activity, color: "text-primary" },
+                    { label: "Registration Opens", value: regOpens?.slice(0, 10) || "—", icon: Clock, color: "text-emerald-500" },
+                    { label: "Registration Closes", value: regCloses?.slice(0, 10) || "—", icon: Clock, color: "text-amber-500" },
+                    { label: "Max Teams", value: apiEvent?.participants?.capacity?.max_teams ?? "—", icon: Users, color: "text-blue-500" },
+                    { label: "Team Size", value: apiEvent?.participants?.team ? `${apiEvent.participants.team.min_size}–${apiEvent.participants.team.max_size}` : "—", icon: Users, color: "text-violet-500" },
                   ].map((item) => (
                     <div key={item.label} className="flex items-center justify-between py-1">
                       <div className="flex items-center gap-2"><item.icon className={`h-3.5 w-3.5 ${item.color}`} /><span className="text-xs text-muted-foreground">{item.label}</span></div>
-                      <span className="text-xs font-medium">{item.value}</span>
+                      <span className="text-xs font-medium">{String(item.value)}</span>
                     </div>
                   ))}
                 </CardContent>
               </Card>
             </div>
-            {/* Schedule / Meetups */}
-            <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-              <CardHeader><CardTitle className="text-base">Schedule & Meetups</CardTitle></CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  {[
-                    { title: "Opening Ceremony", date: "May 17, 10:00 AM", status: "Completed" },
-                    { title: "Mentor Office Hours", date: "May 18, 2:00 PM", status: "In Progress" },
-                    { title: "Final Presentations", date: "May 19, 4:00 PM", status: "Upcoming" },
-                  ].map((m) => (
-                    <div key={m.title} className="p-3 rounded-xl border border-border/30 bg-muted/20">
-                      <p className="text-sm font-medium">{m.title}</p>
-                      <p className="text-xs text-muted-foreground mt-1">{m.date}</p>
-                      <ApprovalBadge status={m.status === "Completed" ? "completed" : m.status === "In Progress" ? "in_progress" : "pending"} className="mt-2" />
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+
+            {/* Key dates */}
+            {keyDates.length > 0 && (
+              <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+                <CardHeader><CardTitle className="text-base">Key Dates</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {keyDates.map((d) => (
+                      <div key={d.name} className="p-3 rounded-xl border border-border/30 bg-muted/20">
+                        <p className="text-sm font-medium">{d.name}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{d.date?.slice(0, 16).replace("T", " ")}</p>
+                        {d.description && <p className="text-xs text-muted-foreground/70 mt-0.5">{d.description}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           {/* Workflow Tab */}
@@ -174,15 +221,145 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
                     </div>
                     <div className="flex gap-2">
                       {ws.actions.map((a) => (
-                        <Button key={a} variant="outline" size="sm" className="text-xs" onClick={() => toast.info(`Action: ${a}`)}>
-                          {a}
-                        </Button>
+                        <Button key={a} variant="outline" size="sm" className="text-xs" onClick={() => toast.info(`Action: ${a}`)}>{a}</Button>
                       ))}
                     </div>
                   </CardContent>
                 </Card>
               </motion.div>
             ))}
+          </TabsContent>
+
+          {/* Rounds Tab */}
+          <TabsContent value="rounds">
+            <div className="space-y-4">
+              {(apiRounds.length > 0 ? apiRounds : event.rounds).map((round: any, i: number) => {
+                const isApi = apiRounds.length > 0;
+                const name = isApi ? round.round_name : round.name;
+                const startDate = isApi ? round.dates?.starts_at?.slice(0, 10) : round.startDate;
+                const endDate = isApi ? round.dates?.ends_at?.slice(0, 10) : round.endDate;
+                const criteria: any[] = isApi ? (round.scoring?.criteria || []) : [];
+                return (
+                  <Card key={round.round_id || round.id || i} className="border-border/50 bg-card/80 backdrop-blur-sm">
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold">{name}</p>
+                          <Badge variant="outline" className="text-[10px]">{isApi ? round.type?.replace(/_/g, " ") : "round"}</Badge>
+                          <ApprovalBadge status="pending" />
+                        </div>
+                        {(startDate || endDate) && (
+                          <span className="text-xs text-muted-foreground">{startDate || "?"} → {endDate || "?"}</span>
+                        )}
+                      </div>
+                      {criteria.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-xs text-muted-foreground font-medium">Scoring</p>
+                          <div className="flex flex-wrap gap-2">
+                            {criteria.map((c: any) => (
+                              <span key={c.criterion_id || c.name} className="text-xs bg-muted/50 rounded-lg px-2 py-1">
+                                {c.name} <span className="font-medium">{c.weight}%</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {isApi && round.deliverables?.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {round.deliverables.map((d: any) => (
+                            <span key={d.name} className="text-xs border border-border/50 rounded-lg px-2 py-1 text-muted-foreground">
+                              {d.name} ({d.type})
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </TabsContent>
+
+          {/* Judges Tab */}
+          <TabsContent value="judges">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {(apiJudges.length > 0 ? apiJudges : eventJudges.length > 0 ? eventJudges : mockJudges).map((j: any, i: number) => {
+                const isApi = apiJudges.length > 0;
+                const name = j.name || "Judge";
+                const company = isApi ? j.company : j.institution;
+                const expertise: string[] = isApi ? (j.expertise || []) : (j.expertise || []);
+                return (
+                  <motion.div key={j.judge_id || j.id || i} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
+                    <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+                      <CardContent className="p-4">
+                        <div className="flex items-center gap-3 mb-3">
+                          <Avatar className="h-10 w-10">
+                            <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                              {name.split(" ").map((n: string) => n[0]).join("").slice(0, 2)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="font-semibold text-sm">{name}</p>
+                            <p className="text-xs text-muted-foreground">{company || ""}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-1 flex-wrap mb-2">
+                          {expertise.map((e: string) => <Badge key={e} variant="outline" className="text-[9px]">{e}</Badge>)}
+                        </div>
+                        {j.email && <p className="text-xs text-muted-foreground">{j.email}</p>}
+                        {j.rating && <p className="text-xs text-muted-foreground mt-1">Rating: {j.rating}/5.0</p>}
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </TabsContent>
+
+          {/* Prizes Tab */}
+          <TabsContent value="prizes">
+            {prizes ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 mb-2">
+                  <Trophy className="h-5 w-5 text-amber-500" />
+                  <span className="text-lg font-bold">{prizes.total_pool}</span>
+                  <span className="text-sm text-muted-foreground">total prize pool</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {(prizes.distribution || []).map((d: any, i: number) => (
+                    <motion.div key={d.rank || i} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
+                      <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+                        <CardContent className="p-4 text-center space-y-1">
+                          <p className="text-2xl font-bold text-amber-500">{d.amount}</p>
+                          <p className="font-semibold">{d.title}</p>
+                          {d.description && <p className="text-xs text-muted-foreground">{d.description}</p>}
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                  ))}
+                  {(prizes.special_awards || []).map((a: any, i: number) => (
+                    <motion.div key={a.name || i} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: (prizes.distribution?.length + i) * 0.05 }}>
+                      <Card className="border-border/50 bg-card/80 backdrop-blur-sm border-dashed">
+                        <CardContent className="p-4 text-center space-y-1">
+                          <p className="text-2xl font-bold text-violet-500">{a.amount}</p>
+                          <p className="font-semibold">{a.name}</p>
+                          {a.description && <p className="text-xs text-muted-foreground">{a.description}</p>}
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                  ))}
+                </div>
+                {prizes.certificates && (
+                  <div className="flex gap-2 flex-wrap pt-2">
+                    {prizes.certificates.participant_certificate && <Badge variant="outline">Participant Certificate</Badge>}
+                    {prizes.certificates.winner_certificate && <Badge variant="outline">Winner Certificate</Badge>}
+                    {prizes.certificates.finalist_certificate && <Badge variant="outline">Finalist Certificate</Badge>}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">No prize information available.</p>
+            )}
           </TabsContent>
 
           {/* Teams Tab */}
@@ -218,51 +395,12 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
             </div>
           </TabsContent>
 
-          {/* Judges Tab */}
-          <TabsContent value="judges">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {eventJudges.length > 0 ? eventJudges.map((j, i) => (
-                <motion.div key={j.id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-                  <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3 mb-3">
-                        <Avatar className="h-10 w-10"><AvatarFallback className="bg-primary/10 text-primary">{j.name.split(" ").map((n) => n[0]).join("")}</AvatarFallback></Avatar>
-                        <div>
-                          <p className="font-semibold text-sm">{j.name}</p>
-                          <p className="text-xs text-muted-foreground">{j.institution}</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-1 flex-wrap mb-3">
-                        {j.expertise.map((e) => <Badge key={e} variant="outline" className="text-[9px]">{e}</Badge>)}
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>Rating: {j.rating}/5.0</span>
-                        <span>{j.email}</span>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              )) : mockJudges.map((j, i) => (
-                <motion.div key={j.id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
-                  <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3 mb-3">
-                        <Avatar className="h-10 w-10"><AvatarFallback className="bg-primary/10 text-primary">{j.name.split(" ").map((n) => n[0]).join("")}</AvatarFallback></Avatar>
-                        <div><p className="font-semibold text-sm">{j.name}</p><p className="text-xs text-muted-foreground">{j.institution}</p></div>
-                      </div>
-                      <div className="flex gap-1 flex-wrap mb-3">{j.expertise.map((e) => <Badge key={e} variant="outline" className="text-[9px]">{e}</Badge>)}</div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground"><span>Rating: {j.rating}/5.0</span></div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
-          </TabsContent>
-
           {/* Submissions Tab */}
           <TabsContent value="submissions">
             <div className="space-y-3">
-              {eventSubs.map((sub, i) => (
+              {eventSubs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No submissions yet.</p>
+              ) : eventSubs.map((sub, i) => (
                 <motion.div key={sub.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
                   <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
                     <CardContent className="p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -274,22 +412,12 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
                         <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
                           <span>Round: {sub.round}</span>
                           <span>Submitted: {new Date(sub.submittedAt).toLocaleString()}</span>
-                          <span>{sub.attachments.length} files</span>
                         </div>
                         {sub.feedback && <p className="text-xs mt-2 text-muted-foreground italic">&quot;{sub.feedback}&quot;</p>}
                       </div>
                       <div className="flex items-center gap-4">
                         {sub.score !== null && (
-                          <div className="text-center">
-                            <p className="text-lg font-bold">{sub.score}</p>
-                            <p className="text-[10px] text-muted-foreground">Score</p>
-                          </div>
-                        )}
-                        {sub.panelAvg !== null && (
-                          <div className="text-center">
-                            <p className="text-lg font-bold text-muted-foreground">{sub.panelAvg}</p>
-                            <p className="text-[10px] text-muted-foreground">Panel Avg</p>
-                          </div>
+                          <div className="text-center"><p className="text-lg font-bold">{sub.score}</p><p className="text-[10px] text-muted-foreground">Score</p></div>
                         )}
                         <Button variant="outline" size="sm" onClick={() => toast.info("Opening submission details...")}><Eye className="h-3.5 w-3.5" /></Button>
                       </div>
@@ -300,40 +428,13 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
             </div>
           </TabsContent>
 
-          {/* Rounds Tab */}
-          <TabsContent value="rounds">
-            <div className="space-y-4">
-              {event.rounds.map((round, i) => (
-                <Card key={round.id} className="border-border/50 bg-card/80 backdrop-blur-sm">
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <p className="font-semibold">{round.name}</p>
-                        <ApprovalBadge status={round.status === "completed" ? "completed" : round.status === "active" ? "in_progress" : "pending"} />
-                      </div>
-                      <span className="text-xs text-muted-foreground">{round.startDate} → {round.endDate}</span>
-                    </div>
-                    <div className="flex items-center gap-6 text-sm">
-                      <span className="text-muted-foreground">Advanced: <span className="font-medium text-foreground">{round.participantsAdvanced}</span></span>
-                      <span className="text-muted-foreground">Total: <span className="font-medium text-foreground">{round.totalParticipants}</span></span>
-                      {round.totalParticipants > 0 && (
-                        <span className="text-muted-foreground">Rate: <span className="font-medium text-foreground">{Math.round((round.participantsAdvanced / round.totalParticipants) * 100)}%</span></span>
-                      )}
-                    </div>
-                    {round.totalParticipants > 0 && <Progress value={(round.participantsAdvanced / round.totalParticipants) * 100} className="h-1.5 mt-3" />}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </TabsContent>
-
           {/* Comms Tab */}
           <TabsContent value="comms">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {[
-                { platform: "Email", icon: Mail, count: "342 sent", status: "Active", lastSent: "2 hours ago", desc: "Automated round reminders and updates" },
-                { platform: "WhatsApp", icon: MessageSquare, count: "68 groups", status: "Active", lastSent: "1 hour ago", desc: "Team coordination and announcements" },
-                { platform: "Discord", icon: Globe, count: "1 server", status: "Active", lastSent: "30 min ago", desc: "Real-time participant support channel" },
+                { platform: "Email", icon: Mail, count: "0 sent", status: "Pending", lastSent: "—", desc: "Automated round reminders and updates" },
+                { platform: "WhatsApp", icon: MessageSquare, count: "0 groups", status: "Pending", lastSent: "—", desc: "Team coordination and announcements" },
+                { platform: "Discord", icon: Globe, count: "0 servers", status: "Pending", lastSent: "—", desc: "Real-time participant support channel" },
               ].map((c) => (
                 <Card key={c.platform} className="border-border/50 bg-card/80 backdrop-blur-sm">
                   <CardContent className="p-4">
@@ -343,7 +444,7 @@ export default function EventDetailPage({ params }: { params: Promise<{ hash: st
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">{c.count} • Last: {c.lastSent}</span>
-                      <ApprovalBadge status="approved" />
+                      <ApprovalBadge status="pending" />
                     </div>
                   </CardContent>
                 </Card>
