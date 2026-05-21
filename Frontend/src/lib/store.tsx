@@ -14,10 +14,11 @@ interface User {
 interface AppState {
   user: User | null;
   theme: "dark" | "light";
-  login: (user: User) => void;
+  login: (u: User) => void;
   logout: () => void;
   toggleTheme: () => void;
   setTheme: (t: "dark" | "light") => void;
+  initUser: (u: User) => void;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -26,8 +27,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [theme, setThemeState] = useState<"dark" | "light">("dark");
 
-  const login = useCallback((u: User) => setUser(u), []);
-  const logout = useCallback(() => setUser(null), []);
+  const login = useCallback((u: User) => {
+    setUser(u);
+  }, []);
+  
+  const initUser = useCallback((u: User) => setUser(u), []);
+
+  const logout = useCallback(() => {
+    setUser(null);
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem("auth_token");
+    }
+  }, []);
   const toggleTheme = useCallback(() => {
     setThemeState((t) => {
       const next = t === "dark" ? "light" : "dark";
@@ -41,7 +52,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AppContext.Provider value={{ user, theme, login, logout, toggleTheme, setTheme }}>
+    <AppContext.Provider value={{ user, theme, login, logout, toggleTheme, setTheme, initUser }}>
       {children}
     </AppContext.Provider>
   );

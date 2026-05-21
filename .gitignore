@@ -39,3 +39,36 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+
+# Firebase credentials (CRITICAL - never commit)
+*.json
+*firebase-adminsdk*.json
+*service-account*.json
+
+# Backend (Python)
+__pycache__/
+*.pyc
+venv/
+env/
+.venv/
+backend/venv/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log

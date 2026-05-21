@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+asyncpg
+pydantic[email]
+pydantic-settings
+firebase-admin
+alembic
+python-jose[cryptography]
+python-multipart
+passlib[bcrypt]

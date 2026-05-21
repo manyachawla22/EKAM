@@ -13,6 +13,9 @@ import { motion } from "framer-motion";
 import { Zap, Eye, EyeOff, ArrowRight, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
+import { authApi } from "@/lib/api";
+import { auth } from "@/lib/firebase";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from "firebase/auth";
 
 export default function AuthPage() {
   const router = useRouter();
@@ -40,10 +43,18 @@ export default function AuthPage() {
     e.preventDefault();
     if (!loginEmail || !loginPass) { toast.error("Please fill in all fields"); return; }
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    login({ name: "Demo User", email: loginEmail, role, organization: "Ekam Inc." });
-    toast.success(`Welcome back! Redirecting to ${role} dashboard...`);
-    setTimeout(() => router.push(roleRoutes[role]), 500);
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPass);
+      const token = await userCredential.user.getIdToken();
+      const res = await authApi.login(token);
+      login({ name: res.name, email: res.email, role: res.role, organization: res.organization });
+      toast.success(`Welcome back! Redirecting to ${role} dashboard...`);
+      setTimeout(() => router.push(roleRoutes[res.role as Role] || roleRoutes[role]), 500);
+    } catch (error: any) {
+      toast.error(error.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleSignup = async (e: React.FormEvent) => {
@@ -52,10 +63,18 @@ export default function AuthPage() {
       toast.error("Please fill in required fields"); return;
     }
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    login({ name: signupData.name, email: signupData.email, role, organization: signupData.organization });
-    toast.success("Account created! Redirecting...");
-    setTimeout(() => router.push(roleRoutes[role]), 500);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, signupData.email, signupData.password);
+      const token = await userCredential.user.getIdToken();
+      const res = await authApi.login(token, role, signupData.name);
+      login({ name: res.name, email: res.email, role: res.role, organization: res.organization });
+      toast.success("Account created! Redirecting...");
+      setTimeout(() => router.push(roleRoutes[res.role as Role] || roleRoutes[role]), 500);
+    } catch (error: any) {
+      toast.error(error.message || "Signup failed");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
