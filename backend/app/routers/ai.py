@@ -55,7 +55,8 @@ OUTPUT SCHEMA (include only present fields):
     "description": "1-2 sentence auto-generated summary",
     "tagline": "",
     "venue": {{"name":"","city":"","state":"","country":""}},
-    "contact": {{"email":"","phone":""}}
+    "contact": {{"email":"","phone":""}},
+    "tracks": [{{"track_id":"t1","name":"AI/ML","description":""}}]
   }},
   "timeline": {{
     "timezone": "Asia/Kolkata",
@@ -68,7 +69,8 @@ OUTPUT SCHEMA (include only present fields):
     "auto_team_matching_allowed": false,
     "team": {{"min_size":4,"max_size":4}},
     "capacity": {{"max_teams":50}},
-    "eligibility": {{"open_to":["students"]}}
+    "eligibility": {{"open_to":["students"]}},
+    "team_formation_constraints": "at least 1 girl per team"
   }}
 }}"""
 
@@ -170,6 +172,8 @@ Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_pane
 Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
 Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
 {{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
+Field: tracks → reply "AI, Web3, Climate Tech" → {{"core":{{"tracks":[{{"track_id":"t1","name":"AI","description":""}},{{"track_id":"t2","name":"Web3","description":""}},{{"track_id":"t3","name":"Climate Tech","description":""}}]}}}}
+Field: team_constraints → reply "at least 1 girl per team, members from different colleges" → {{"participants":{{"team_formation_constraints":"at least 1 girl per team, members from different colleges"}}}}
 
 PRIZE RULES:
 - Convert shorthand amounts: "10k"→"₹10,000", "1L"/"1,00,000"→"₹1,00,000", "5000"→"₹5,000"
@@ -205,6 +209,10 @@ def _question_to_field_key(question: str) -> Optional[str]:
         return "contact"
     if "registration" in q:
         return "registration"
+    if "team formation constraint" in q or "constraint" in q:
+        return "team_constraints"
+    if "track" in q:
+        return "tracks"
     if "team" in q:
         return "teams"
     if "round" in q:
@@ -281,6 +289,8 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
          "name", "What is the name of the event?"),
         (not core.get("theme"),
          "theme", "What is the theme or focus area of the event?"),
+        (not core.get("tracks"),
+         "tracks", "What are the tracks or themes participants can compete under? (e.g. AI/ML, Web3, Climate Tech — skip if not applicable)"),
         (not core.get("mode"),
          "mode", "Will this be online, offline, or hybrid?"),
         (core.get("mode") in ("offline", "hybrid") and not core.get("venue", {}).get("city"),
@@ -292,6 +302,8 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
         (not cfg.get("participants", {}).get("team", {}).get("min_size")
          and not cfg.get("participants", {}).get("capacity", {}).get("max_teams"),
          "teams", "How many teams can participate, and what is the team size?"),
+        (not cfg.get("participants", {}).get("team_formation_constraints"),
+         "team_constraints", "Any team formation constraints? (e.g. 'at least 1 girl per team', 'members from different colleges' — skip if none)"),
         (not cfg.get("rounds"),
          "rounds", "Describe the rounds — names, types, and scoring criteria with weights."),
         (not _has_real_judges(cfg),
@@ -513,6 +525,7 @@ def _enrich_config(config: dict) -> dict:
         config["core"] = {}
     core = config["core"]
     core.setdefault("tagline", "")
+    core.setdefault("tracks", [])
     core.setdefault("cover_image_url", "")
     core.setdefault("language", "English")
     venue = core.setdefault("venue", {})
@@ -557,6 +570,7 @@ def _enrich_config(config: dict) -> dict:
     eligibility.setdefault("age_min", None)
     eligibility.setdefault("age_max", None)
     eligibility.setdefault("additional_criteria", "")
+    participants.setdefault("team_formation_constraints", "")
     participants.setdefault("registration_form_fields", [
         {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
         {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
