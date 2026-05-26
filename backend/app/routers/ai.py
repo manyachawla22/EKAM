@@ -45,18 +45,18 @@ DATE MATH (today = {today}, timezone = Asia/Kolkata +05:30):
   "in N days" → add N days to {today}
   "March 15 9 AM IST" → 2026-03-15T09:00:00+05:30
 
-DO NOT extract the event name/title — that is always asked separately.
-
 OUTPUT SCHEMA (include only present fields):
 {{
   "core": {{
+    "name": "Full official event name",
     "theme": "2-4 keyword phrase only",
     "event_type": "hackathon|case_competition|quiz|ideathon|coding_contest",
     "mode": "online|offline|hybrid",
     "description": "1-2 sentence auto-generated summary",
     "tagline": "",
     "venue": {{"name":"","city":"","state":"","country":""}},
-    "contact": {{"email":"","phone":""}}
+    "contact": {{"email":"","phone":""}},
+    "tracks": [{{"track_id":"t1","name":"AI/ML","description":""}}]
   }},
   "timeline": {{
     "timezone": "Asia/Kolkata",
@@ -69,7 +69,8 @@ OUTPUT SCHEMA (include only present fields):
     "auto_team_matching_allowed": false,
     "team": {{"min_size":4,"max_size":4}},
     "capacity": {{"max_teams":50}},
-    "eligibility": {{"open_to":["students"]}}
+    "eligibility": {{"open_to":["students"]}},
+    "team_formation_constraints": "at least 1 girl per team"
   }}
 }}"""
 
@@ -86,7 +87,8 @@ ROUND TYPE MAPPING:
   offline hack / live coding → "coding"
   final presentation / live pitch / demo day → "live_presentation"
 
-Scoring weights MUST sum to 100. max_score = weight, min_score = 0.
+If scoring criteria ARE mentioned, weights MUST sum to 100 and max_score = weight, min_score = 0.
+If scoring criteria are NOT mentioned, omit the scoring.criteria array entirely — still extract the round name, type, and dates.
 Last round must have "is_final_round": true.
 
 OUTPUT SCHEMA:
@@ -124,6 +126,8 @@ def _sec3_system() -> str:
 Return ONLY valid JSON — no markdown, no prose.
 Include ONLY fields you can confidently extract. Omit unknown fields entirely.
 
+CRITICAL: If the message contains NO prize, award, or cash information, return {} — do NOT invent, assume, or placeholder prize values.
+
 total_pool = sum of ALL prize amounts (distribution + special awards).
 
 OUTPUT SCHEMA:
@@ -157,16 +161,25 @@ Today = {today}, timezone = Asia/Kolkata (+05:30).
 
 DATE MATH: "in N days" = {today} + N days | "today/now" = {today}T00:00:00+05:30
 
-You will be told which field is being answered. Extract ONLY that field and return
-the matching JSON structure. For example:
+The context will say "Field: <key>" — extract ONLY that field and wrap it in the correct top-level key.
 
+EXAMPLES:
 Field: venue → reply "IIT Delhi, Delhi" → {{"core":{{"venue":{{"name":"IIT Delhi","city":"Delhi","state":"Delhi","country":"India"}}}}}}
 Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"email":"abc@gmail.com","phone":"9876543210"}}}}}}
 Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
 Field: teams → reply "50 teams 4 each" → {{"participants":{{"capacity":{{"max_teams":50}},"team":{{"min_size":4,"max_size":4}}}}}}
-Field: rounds → extract full rounds array with scoring, deliverables, advancement.
-Field: judges → extract judging_panel.judges array.
-Field: prizes → extract full prizes object."""
+Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
+Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
+Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
+{{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
+Field: tracks → reply "AI, Web3, Climate Tech" → {{"core":{{"tracks":[{{"track_id":"t1","name":"AI","description":""}},{{"track_id":"t2","name":"Web3","description":""}},{{"track_id":"t3","name":"Climate Tech","description":""}}]}}}}
+Field: team_constraints → reply "at least 1 girl per team, members from different colleges" → {{"participants":{{"team_formation_constraints":"at least 1 girl per team, members from different colleges"}}}}
+
+PRIZE RULES:
+- Convert shorthand amounts: "10k"→"₹10,000", "1L"/"1,00,000"→"₹1,00,000", "5000"→"₹5,000"
+- total_pool = sum of ALL prizes given. If only distribution given, sum them.
+- Always wrap inside {{"prizes": {{...}}}} — never return prizes fields at the top level.
+- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}"""
 
 
 # ── Skip detection ─────────────────────────────────────────────────────────────
@@ -196,6 +209,10 @@ def _question_to_field_key(question: str) -> Optional[str]:
         return "contact"
     if "registration" in q:
         return "registration"
+    if "team formation constraint" in q or "constraint" in q:
+        return "team_constraints"
+    if "track" in q:
+        return "tracks"
     if "team" in q:
         return "teams"
     if "round" in q:
@@ -208,6 +225,39 @@ def _question_to_field_key(question: str) -> Optional[str]:
 
 
 # ── What's still needed ────────────────────────────────────────────────────────
+
+_FAKE_POOL_VALUES = {
+    "", "tbd", "n/a", "na", "not mentioned", "not specified",
+    "none", "no prizes", "₹0", "$0", "0", "unknown", "nil", "null",
+}
+
+
+def _sum_prize_distribution(distribution: list) -> str:
+    """Sum prize amounts from distribution list and return formatted string, or '' on failure."""
+    total = 0
+    for entry in distribution:
+        if not isinstance(entry, dict):
+            continue
+        raw = str(entry.get("amount", "")).replace(",", "").replace("₹", "").replace("$", "").strip()
+        raw = re.sub(r"[^\d.]", "", raw)
+        try:
+            total += int(float(raw))
+        except (ValueError, TypeError):
+            return ""
+    return f"₹{total:,}" if total else ""
+
+
+def _prize_pool_missing(cfg: dict) -> bool:
+    """Return True when total_pool is absent, empty, or a hallucinated placeholder."""
+    total_pool = (cfg.get("prizes") or {}).get("total_pool", "")
+    if not total_pool:
+        return True
+    normalized = str(total_pool).strip().lower()
+    if normalized in _FAKE_POOL_VALUES:
+        return True
+    # A real prize value must contain at least one digit
+    return not any(c.isdigit() for c in normalized)
+
 
 _PLACEHOLDER_NAMES = {
     "judge 1", "judge 2", "judge 3", "judge 4", "judge 5",
@@ -239,6 +289,8 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
          "name", "What is the name of the event?"),
         (not core.get("theme"),
          "theme", "What is the theme or focus area of the event?"),
+        (not core.get("tracks"),
+         "tracks", "What are the tracks or themes participants can compete under? (e.g. AI/ML, Web3, Climate Tech — skip if not applicable)"),
         (not core.get("mode"),
          "mode", "Will this be online, offline, or hybrid?"),
         (core.get("mode") in ("offline", "hybrid") and not core.get("venue", {}).get("city"),
@@ -250,11 +302,13 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
         (not cfg.get("participants", {}).get("team", {}).get("min_size")
          and not cfg.get("participants", {}).get("capacity", {}).get("max_teams"),
          "teams", "How many teams can participate, and what is the team size?"),
+        (not cfg.get("participants", {}).get("team_formation_constraints"),
+         "team_constraints", "Any team formation constraints? (e.g. 'at least 1 girl per team', 'members from different colleges' — skip if none)"),
         (not cfg.get("rounds"),
          "rounds", "Describe the rounds — names, types, and scoring criteria with weights."),
         (not _has_real_judges(cfg),
          "judges", "Tell me about the judges — names, companies, and areas of expertise."),
-        (not cfg.get("prizes", {}).get("total_pool"),
+        (_prize_pool_missing(cfg),
          "prizes", "What is the prize pool and how is it distributed?"),
     ]
 
@@ -471,6 +525,7 @@ def _enrich_config(config: dict) -> dict:
         config["core"] = {}
     core = config["core"]
     core.setdefault("tagline", "")
+    core.setdefault("tracks", [])
     core.setdefault("cover_image_url", "")
     core.setdefault("language", "English")
     venue = core.setdefault("venue", {})
@@ -515,6 +570,7 @@ def _enrich_config(config: dict) -> dict:
     eligibility.setdefault("age_min", None)
     eligibility.setdefault("age_max", None)
     eligibility.setdefault("additional_criteria", "")
+    participants.setdefault("team_formation_constraints", "")
     participants.setdefault("registration_form_fields", [
         {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
         {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
@@ -783,10 +839,12 @@ async def chat(request: ChatRequest):
 
     else:
         # Targeted single-model extraction for the specific field being answered
+        field_key = _question_to_field_key(next_q) or "unknown"
         context = (
-            f"FIELD BEING ANSWERED: {next_q}\n\n"
-            f"CURRENT CONFIG:\n{json.dumps(_compact_config(config), default=str)}\n\n"
-            f"USER REPLY: {user_reply}"
+            f"Field: {field_key}\n"
+            f"Question asked: {next_q}\n\n"
+            f"Current config:\n{json.dumps(_compact_config(config), default=str)}\n\n"
+            f"User reply: {user_reply}"
         )
         try:
             result, model_used = await asyncio.to_thread(
@@ -814,6 +872,22 @@ async def chat(request: ChatRequest):
             mv = user_reply.lower().strip()
             if mv in ("online", "offline", "hybrid"):
                 updates = _deep_merge(updates, {"core": {"mode": mv}})
+
+        # Prize safety net: if AI put prizes fields at wrong nesting level, fix it
+        if field_key == "prizes":
+            prize_updates = updates.get("prizes", {})
+            # If AI returned top-level total_pool instead of wrapping in prizes key
+            if not prize_updates.get("total_pool") and updates.get("total_pool"):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": updates.pop("total_pool")}})
+            # If AI still didn't set total_pool but gave distribution, compute total from it
+            prize_updates = updates.get("prizes", {})
+            if not prize_updates.get("total_pool") and isinstance(prize_updates.get("distribution"), list):
+                total = _sum_prize_distribution(prize_updates["distribution"])
+                if total:
+                    updates = _deep_merge(updates, {"prizes": {"total_pool": total}})
+            # Last resort: if AI produced nothing useful, store raw reply so question moves forward
+            if _prize_pool_missing({"prizes": updates.get("prizes", {})}):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": user_reply.strip()}})
 
     # ── Merge updates into config ─────────────────────────────────────────────
     if updates:

@@ -44,7 +44,7 @@ export function mapApiConfigToEvent(api: Record<string, any>): Event {
   return {
     id: api.event_id || api.id || "",
     hash: api.hash || "",
-    name: api.core?.name || "Untitled Event",
+    name: api.core?.name || api.name || "Untitled Event",
     type: api.core?.event_type || "hackathon",
     status: phase === "completed" || phase === "archived" ? "completed" : phase === "draft" ? "draft" : "active",
     stage: phase.replace(/_/g, " "),
