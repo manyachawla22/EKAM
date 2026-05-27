@@ -39,24 +39,31 @@ def _sec1_system() -> str:
     return f"""Extract core event details, timeline, and participant structure from the organizer's message.
 Return ONLY valid JSON — no markdown, no prose.
 Include ONLY fields you can confidently extract. Omit unknown fields entirely.
+Extract team formation constraints if mentioned.
+Allowed team matching constraints:
+- gender_diversity
+- avoid_same_college
+- balance_experience
+- keep_friends_together
+- separate_participants
 
 DATE MATH (today = {today}, timezone = Asia/Kolkata +05:30):
   "opens now" / "today" → {today}T00:00:00+05:30
   "in N days" → add N days to {today}
   "March 15 9 AM IST" → 2026-03-15T09:00:00+05:30
 
+DO NOT extract the event name/title — that is always asked separately.
+
 OUTPUT SCHEMA (include only present fields):
 {{
   "core": {{
-    "name": "Full official event name",
     "theme": "2-4 keyword phrase only",
     "event_type": "hackathon|case_competition|quiz|ideathon|coding_contest",
     "mode": "online|offline|hybrid",
     "description": "1-2 sentence auto-generated summary",
     "tagline": "",
     "venue": {{"name":"","city":"","state":"","country":""}},
-    "contact": {{"email":"","phone":""}},
-    "tracks": [{{"track_id":"t1","name":"AI/ML","description":""}}]
+    "contact": {{"email":"","phone":""}}
   }},
   "timeline": {{
     "timezone": "Asia/Kolkata",
@@ -67,10 +74,24 @@ OUTPUT SCHEMA (include only present fields):
     "model": "individual|teams",
     "individual_registration_allowed": true,
     "auto_team_matching_allowed": false,
+    "team_matching": {{
+      "enabled": true,
+      "constraints": [
+        {{
+          "type": "gender_diversity",
+          "min_per_team": 1
+        }},
+        {{
+          "type": "avoid_same_college"
+        }},
+        {{
+          "type": "balance_experience"
+        }}
+      ]
+    }},
     "team": {{"min_size":4,"max_size":4}},
     "capacity": {{"max_teams":50}},
-    "eligibility": {{"open_to":["students"]}},
-    "team_formation_constraints": "at least 1 girl per team"
+    "eligibility": {{"open_to":["students"]}}
   }}
 }}"""
 
@@ -164,6 +185,9 @@ DATE MATH: "in N days" = {today} + N days | "today/now" = {today}T00:00:00+05:30
 The context will say "Field: <key>" — extract ONLY that field and wrap it in the correct top-level key.
 
 EXAMPLES:
+You will be told which field is being answered. Extract ONLY that field and return
+the matching JSON structure. For example:
+
 Field: venue → reply "IIT Delhi, Delhi" → {{"core":{{"venue":{{"name":"IIT Delhi","city":"Delhi","state":"Delhi","country":"India"}}}}}}
 Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"email":"abc@gmail.com","phone":"9876543210"}}}}}}
 Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
@@ -581,6 +605,10 @@ def _enrich_config(config: dict) -> dict:
         {"field_id": "branch", "label": "Branch/Specialization", "type": "text", "required": False},
         {"field_id": "linkedin_url", "label": "LinkedIn Profile", "type": "url", "required": False},
     ])
+    participants.setdefault("team_matching", {
+        "enabled": False,
+        "constraints": []
+    })
     auto_team = participants.get("auto_team_matching_allowed", False)
     participants.setdefault("team_formation", {
         "method": "auto_ml" if auto_team else "manual",
