@@ -1,177 +1,89 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from typing import List
 from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+
 from app.middleware.auth import require_role
 
 from app.models.user import User, UserRole
-from app.models.judge import Judge, JudgeAssignment
-from app.models.participant import Team
-from app.models.theme import Theme
 
 from app.schemas.judge import (
-    JudgeAssignmentResponse,
+    Judge,
+    JudgeCreate,
+    JudgeAssignment,
     JudgeAssignmentCreate
 )
 
-from app.judge_assignment.optimizer import assign_judges
-
-router = APIRouter()
-
-
-@router.post(
-    "/assign",
-    response_model=JudgeAssignmentResponse,
-    status_code=status.HTTP_201_CREATED
+from app.services.judge_service import (
+    create_judge_service,
+    list_judges_service
 )
-async def assign_judge(
-    assign_in: JudgeAssignmentCreate,
-    current_user: User = Depends(
-        require_role([UserRole.organizer])
-    ),
-    db: AsyncSession = Depends(get_db)
-):
 
-    existing = await db.execute(
-        select(JudgeAssignment).where(
-            JudgeAssignment.judge_id == assign_in.judge_id,
-            JudgeAssignment.team_id == assign_in.team_id,
-            JudgeAssignment.round_id == assign_in.round_id
-        )
-    )
+from app.services.assignment_service import (
+    assign_judge_service
+)
 
-    if existing.scalars().first():
-
-        raise HTTPException(
-            status_code=400,
-            detail="Judge already assigned to this team"
-        )
-
-    new_assign = JudgeAssignment(
-        **assign_in.model_dump()
-    )
-
-    db.add(new_assign)
-
-    await db.commit()
-
-    await db.refresh(new_assign)
-
-    return new_assign
-
-<<<<<<< HEAD
+router = APIRouter(
+    prefix="/judges",
+    tags=["Judges"]
+)
 from pydantic import BaseModel
 import uuid
 import secrets
 from datetime import datetime, timedelta, timezone
 
-class JudgeInviteRequest(BaseModel):
-    email: str
-    event_id: UUID
-    name: str = "Judge"
 
-@router.post("/invite-judge", status_code=status.HTTP_200_OK)
-async def invite_judge(
-    req: JudgeInviteRequest,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+@router.post(
+    "/create",
+    response_model=Judge,
+    status_code=status.HTTP_201_CREATED
+)
+async def create_judge(
+    judge_in: JudgeCreate,
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    from app.core.config import settings
-    
-    # Check if user exists in DB
-    result = await db.execute(select(User).where(User.email == req.email))
-    user = result.scalars().first()
-    
-    temp_password = secrets.token_urlsafe(8)
-    firebase_uid = None
-    
-    if not settings.MOCK_AUTH:
-        import firebase_admin.auth as firebase_auth
-        try:
-            fb_user = firebase_auth.get_user_by_email(req.email)
-            firebase_uid = fb_user.uid
-        except Exception:
-            try:
-                fb_user = firebase_auth.create_user(
-                    email=req.email,
-                    password=temp_password,
-                    display_name=req.name
-                )
-                firebase_uid = fb_user.uid
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Firebase Error: {str(e)}")
-    else:
-        firebase_uid = f"mock_uid_{uuid.uuid4().hex[:8]}"
-
-    if not user:
-        user = User(
-            firebase_uid=firebase_uid,
-            email=req.email,
-            name=req.name,
-            role=UserRole.judge,
-            invitation_token=secrets.token_urlsafe(32),
-            invitation_expiry=datetime.now(timezone.utc) + timedelta(days=7)
-        )
-        db.add(user)
-        await db.flush() # flush to get user.id for Judge model if needed
-        
-        # Create Judge profile
-        from app.models.judge import Judge
-        judge_profile = Judge(user_id=user.id)
-        db.add(judge_profile)
-        await db.flush()
-
-    # Assign Judge to Event
-    from app.models.judge import Judge
-    result = await db.execute(select(Judge).where(Judge.user_id == user.id))
-    judge_profile = result.scalars().first()
-    
-    if not judge_profile:
-        judge_profile = Judge(user_id=user.id)
-        db.add(judge_profile)
-        await db.flush()
-
-    assign_check = await db.execute(
-        select(JudgeAssignment).where(
-            JudgeAssignment.judge_id == judge_profile.id,
-            JudgeAssignment.event_id == req.event_id
-        )
+    return await create_judge_service(
+        db,
+        judge_in
     )
-    if not assign_check.scalars().first():
-        new_assign = JudgeAssignment(judge_id=judge_profile.id, event_id=req.event_id)
-        db.add(new_assign)
-        
-    await db.commit()
-    
-    # Mock Email Service
-    print("="*50)
-    print("MOCK EMAIL SERVICE - JUDGE INVITATION")
-    print(f"To: {req.email}")
-    print(f"Subject: You have been invited to judge an event!")
-    print(f"Body: Please login at /auth with Email: {req.email} and Password: {temp_password}")
-    print("="*50)
-    
-    return {"message": "Judge invited successfully", "email": req.email}
 
-@router.get("/{event_id}", response_model=List[JudgeAssignmentSchema])
-async def list_judges_for_event(
-    event_id: UUID,
-    current_user: User = Depends(require_role([UserRole.organizer])),
-=======
 
-@router.get(
-    "/round/{round_id}",
-    response_model=List[JudgeAssignmentResponse]
+@router.post(
+    "/assign",
+    response_model=JudgeAssignment,
+    status_code=status.HTTP_201_CREATED
 )
-async def list_assignments_for_round(
-    round_id: UUID,
+async def assign_judge(
+    assign_in: JudgeAssignmentCreate,
     current_user: User = Depends(
-        require_role([UserRole.organizer])
+        require_role([UserRole.organizer, UserRole.admin])
     ),
->>>>>>> feature/team-formation
+    db: AsyncSession = Depends(get_db)
+):
+    return await assign_judge_service(
+        db,
+        assign_in
+    )
+
+
+@router.get("/{event_id}", response_model=List[Judge])
+async def list_judges(
+    event_id: UUID,
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    return await list_judges_service(
+        db,
+        event_id
+    )
     db: AsyncSession = Depends(get_db)
 ):
 

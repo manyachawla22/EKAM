@@ -1,43 +1,68 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from typing import List
 from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.middleware.auth import require_role, get_current_user
+
+from app.middleware.auth import require_role
+
 from app.models.user import User, UserRole
-from app.models.event import Round, Event
-from app.schemas.event import Round as RoundSchema, RoundCreate
 
-router = APIRouter()
+from app.schemas.round import (
+    Round,
+    RoundCreate
+)
 
-@router.post("/create", response_model=RoundSchema, status_code=status.HTTP_201_CREATED)
+from app.services.round_service import (
+    create_round_service,
+    list_rounds_service
+)
+
+router = APIRouter(
+    prefix="/rounds",
+    tags=["Rounds"]
+)
+
+
+@router.post(
+    "/create",
+    response_model=Round,
+    status_code=status.HTTP_201_CREATED
+)
 async def create_round(
     round_in: RoundCreate,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+    current_user: User = Depends(
+        require_role([
+            UserRole.organizer,
+            UserRole.admin
+        ])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    # Verify event belongs to organizer
-    event_result = await db.execute(select(Event).where(Event.id == round_in.event_id))
-    event = event_result.scalars().first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-        
-    if event.organizer_id != current_user.id and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to create rounds for this event")
+    return await create_round_service(
+        db,
+        round_in,
+        current_user
+    )
 
-    new_round = Round(**round_in.model_dump())
-    db.add(new_round)
-    await db.commit()
-    await db.refresh(new_round)
-    return new_round
 
-@router.get("/{event_id}", response_model=List[RoundSchema])
+@router.get(
+    "/{event_id}",
+    response_model=List[Round]
+)
 async def list_rounds(
     event_id: UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role([
+        UserRole.organizer,
+        UserRole.admin,
+        UserRole.judge,
+        UserRole.participant
+    ])),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Round).where(Round.event_id == event_id))
-    return result.scalars().all()
+    return await list_rounds_service(
+        db,
+        event_id
+    )

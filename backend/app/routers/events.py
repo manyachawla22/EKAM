@@ -1,108 +1,108 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
-from typing import List
 from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.middleware.auth import get_current_user, require_role
+
+from app.middleware.auth import (
+    get_current_user,
+    require_role
+)
+
 from app.models.user import User, UserRole
-from app.models.event import Event, EventStatus
-from app.schemas.event import Event as EventSchema, EventCreate, EventUpdate
 
-router = APIRouter()
+from app.schemas.event import (
+    Event,
+    EventCreate,
+    EventUpdate
+)
 
-@router.post("/create", response_model=EventSchema, status_code=status.HTTP_201_CREATED)
+from app.services.event_service import (
+    create_event_service,
+    list_events_service,
+    get_event_service,
+    update_event_service,
+    delete_event_service
+)
+
+router = APIRouter(
+    prefix="/events",
+    tags=["Events"]
+)
+
+
+@router.post(
+    "/create",
+    response_model=Event,
+    status_code=status.HTTP_201_CREATED
+)
 async def create_event(
     event_in: EventCreate,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    # Enforce that organizers can only create events for themselves
-    if str(event_in.organizer_id) != str(current_user.id) and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not allowed to create events for other organizers")
+    return await create_event_service(
+        db,
+        event_in,
+        current_user
+    )
 
-    new_event = Event(**event_in.model_dump())
-    db.add(new_event)
-    try:
-        await db.commit()
-        await db.refresh(new_event)
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail="Event hash already exists or invalid data")
-        
-    return new_event
 
-@router.get("", response_model=List[EventSchema])
+@router.get("", response_model=List[Event])
 async def list_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    # Organizers see their events, admins see all, participants/judges see active events
-    query = select(Event).options(selectinload(Event.rounds))
-    if current_user.role == UserRole.organizer:
-        query = query.where(Event.organizer_id == current_user.id)
-    elif current_user.role in [UserRole.participant, UserRole.judge]:
-        query = query.where(Event.status == EventStatus.active)
-        
-    result = await db.execute(query)
-    return result.scalars().all()
+    return await list_events_service(
+        db,
+        current_user
+    )
 
-@router.get("/{id}", response_model=EventSchema)
+
+@router.get("/{event_id}", response_model=Event)
 async def get_event(
-    id: UUID,
+    event_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Event).options(selectinload(Event.rounds)).where(Event.id == id))
-    event = result.scalars().first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-        
-    # Access checks
-    if current_user.role == UserRole.organizer and event.organizer_id != current_user.id and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to view this event")
-        
-    return event
+    return await get_event_service(
+        db,
+        event_id,
+        current_user
+    )
 
-@router.put("/{id}", response_model=EventSchema)
+
+@router.put("/{event_id}", response_model=Event)
 async def update_event(
-    id: UUID,
+    event_id: UUID,
     event_in: EventUpdate,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Event).where(Event.id == id))
-    event = result.scalars().first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-        
-    if event.organizer_id != current_user.id and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to update this event")
-        
-    update_data = event_in.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(event, key, value)
-        
-    await db.commit()
-    await db.refresh(event)
-    return event
+    return await update_event_service(
+        db,
+        event_id,
+        event_in,
+        current_user
+    )
 
-@router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
+
+@router.delete("/{event_id}")
 async def delete_event(
-    id: UUID,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+    event_id: UUID,
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Event).where(Event.id == id))
-    event = result.scalars().first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-        
-    if event.organizer_id != current_user.id and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to delete this event")
-        
-    await db.delete(event)
-    await db.commit()
-    return None
+    return await delete_event_service(
+        db,
+        event_id,
+        current_user
+    )

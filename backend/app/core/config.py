@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     
     FIREBASE_CREDENTIALS_PATH:str
     MOCK_AUTH: bool
+    DEBUG: bool
      
     GROQ_API_KEY: str 
     GROQ_MODEL: str

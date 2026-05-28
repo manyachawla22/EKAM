@@ -11,6 +11,10 @@ if not settings.MOCK_AUTH and settings.FIREBASE_CREDENTIALS_PATH:
         cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
         firebase_admin.initialize_app(cred)
 
+# Changes to be done here
+# RBAC to be implemented
+# but first check DataBase Schema 
+
 async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
     token = credentials.credentials
     if settings.MOCK_AUTH:

@@ -1,37 +1,61 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
 
+
+# -------------------- JUDGE --------------------
+
 class JudgeBase(BaseModel):
-    expertise: List[str] = []
+    name: str
+    email: EmailStr
+
     institution: Optional[str] = None
-    rating: float = 5.0
+
+    expertise: List[str] = []
+
 
 class JudgeCreate(JudgeBase):
-    user_id: UUID
+    event_id: UUID
 
-class Judge(JudgeBase):
+
+class JudgeUpdate(BaseModel):
+    institution: Optional[str] = None
+    expertise: Optional[List[str]] = None
+
+
+class JudgeResponse(JudgeBase):
     id: UUID
-    user_id: UUID
+
+    event_id: UUID
+
+    rating: float
+
+    is_verified: bool
+
+    last_login: Optional[datetime]
+
     created_at: datetime
 
     class Config:
         from_attributes = True
 
-class JudgeAssignmentBase(BaseModel):
-    pass
 
-class JudgeAssignmentCreate(JudgeAssignmentBase):
+# -------------------- JUDGE ASSIGNMENT --------------------
+
+class JudgeAssignmentCreate(BaseModel):
     judge_id: UUID
-    event_id: UUID
-    round_id: Optional[UUID] = None
+    team_id: UUID
+    round_id: UUID
 
-class JudgeAssignment(JudgeAssignmentBase):
+
+class JudgeAssignmentResponse(BaseModel):
     id: UUID
+
     judge_id: UUID
-    event_id: UUID
-    round_id: Optional[UUID]
+    team_id: UUID
+    round_id: UUID
+
     assigned_at: datetime
 
     class Config:

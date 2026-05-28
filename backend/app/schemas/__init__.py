@@ -1,6 +1,53 @@
-from .user import User, UserCreate, UserUpdate
-from .event import Event, EventCreate, EventUpdate, Round, RoundCreate
-from .participant import Participant, ParticipantCreate, Team, TeamCreate, TeamMember, TeamMemberCreate
-from .judge import Judge, JudgeCreate, JudgeAssignment, JudgeAssignmentCreate
-from .submission import Submission, SubmissionCreate, Evaluation, EvaluationCreate
-from .report import Report, ReportCreate
+from .user import (
+    UserCreate,
+    UserUpdate,
+    UserResponse
+)
+
+from .event import (
+    EventCreate,
+    EventUpdate,
+    EventResponse,
+    RoundCreate,
+    RoundResponse
+)
+
+from .theme import (
+    ThemeCreate,
+    ThemeUpdate,
+    ThemeResponse
+)
+
+from .participant import (
+    ParticipantCreate,
+    ParticipantUpdate,
+    ParticipantResponse
+)
+
+from .judge import (
+    JudgeCreate,
+    JudgeUpdate,
+    JudgeResponse,
+    JudgeAssignmentCreate,
+    JudgeAssignmentResponse
+)
+
+from .team import (
+    TeamCreate,
+    TeamUpdate,
+    TeamResponse,
+    TeamMemberCreate,
+    TeamMemberResponse
+)
+
+from .submission import (
+    SubmissionCreate,
+    SubmissionResponse,
+    EvaluationCreate,
+    EvaluationResponse
+)
+
+from .report import (
+    ReportCreate,
+    ReportResponse
+)

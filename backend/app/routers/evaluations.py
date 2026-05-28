@@ -41,3 +41,68 @@ async def list_evaluations(
 ):
     result = await db.execute(select(Evaluation).where(Evaluation.submission_id == submission_id))
     return result.scalars().all()
+from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+
+from app.middleware.auth import require_role
+
+from app.models.user import User, UserRole
+
+from app.schemas.evaluation import (
+    Evaluation,
+    EvaluationCreate
+)
+
+from app.services.evaluation_service import (
+    submit_evaluation_service,
+    get_submission_evaluations_service
+)
+
+router = APIRouter(
+    prefix="/evaluations",
+    tags=["Evaluations"]
+)
+
+
+@router.post(
+    "/submit",
+    response_model=Evaluation,
+    status_code=status.HTTP_201_CREATED
+)
+async def submit_evaluation(
+    evaluation_in: EvaluationCreate,
+    current_user: User = Depends(
+        require_role([UserRole.judge])
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    return await submit_evaluation_service(
+        db,
+        evaluation_in
+    )
+
+
+@router.get(
+    "/{submission_id}",
+    response_model=List[Evaluation]
+)
+async def get_submission_evaluations(
+    submission_id: UUID,
+    current_user: User = Depends(
+        require_role([
+            UserRole.organizer,
+            UserRole.admin,
+            UserRole.judge
+        ])
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    return await get_submission_evaluations_service(
+        db,
+        submission_id
+    )

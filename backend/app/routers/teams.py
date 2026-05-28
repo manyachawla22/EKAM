@@ -1,105 +1,87 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from typing import List
 from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.middleware.auth import get_current_user
 
-from app.models.user import User
-from app.models.participant import Team, TeamMember, Participant
+from app.middleware.auth import require_role
 
-from app.schemas.participant import (
-    Team as TeamSchema,
-    TeamCreate,
-    TeamMember as TeamMemberSchema,
-    TeamMemberCreate
+from app.models.user import User, UserRole
+
+from app.schemas.judge import (
+    Judge,
+    JudgeCreate,
+    JudgeAssignment,
+    JudgeAssignmentCreate
 )
 
-from app.team_formation.optimizer import (
-    form_teams,
-    compute_team_diversity_score
+from app.services.judge_service import (
+    create_judge_service,
+    list_judges_service
 )
 
-from app.routers.ai import _load_config
+from app.services.assignment_service import (
+    assign_judge_service
+)
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/judges",
+    tags=["Judges"]
+)
 
 
 @router.post(
     "/create",
-    response_model=TeamSchema,
+    response_model=Judge,
     status_code=status.HTTP_201_CREATED
 )
-async def create_team(
-    team_in: TeamCreate,
-    current_user: User = Depends(get_current_user),
+async def create_judge(
+    judge_in: JudgeCreate,
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    new_team = Team(**team_in.model_dump())
-
-    db.add(new_team)
-
-    await db.commit()
-
-    await db.refresh(new_team)
-
-    return new_team
+    return await create_judge_service(
+        db,
+        judge_in
+    )
 
 
 @router.post(
     "/assign",
-    response_model=TeamMemberSchema,
+    response_model=JudgeAssignment,
     status_code=status.HTTP_201_CREATED
 )
-async def assign_team_member(
-    member_in: TeamMemberCreate,
-    current_user: User = Depends(get_current_user),
+async def assign_judge(
+    assign_in: JudgeAssignmentCreate,
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-    new_member = TeamMember(**member_in.model_dump())
-
-    db.add(new_member)
-
-    await db.commit()
-
-    await db.refresh(new_member)
-
-    return new_member
-
-
-@router.get(
-    "/{event_id}",
-    response_model=List[TeamSchema]
-)
-async def list_teams(
-    event_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    result = await db.execute(
-        select(Team).where(
-            Team.event_id == event_id
-        )
+    return await assign_judge_service(
+        db,
+        assign_in
     )
 
-    return result.scalars().all()
-
-<<<<<<< HEAD
 from app.team_formation.optimizer import form_teams, compute_team_diversity_score
 from app.models.participant import Participant
-=======
->>>>>>> feature/team-formation
 
-@router.post("/auto-form/{event_id}")
-async def auto_form_teams(
+@router.get("/{event_id}", response_model=List[Judge])
+async def list_judges(
     event_id: UUID,
-    team_size: int = 4,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(
+        require_role([UserRole.organizer, UserRole.admin])
+    ),
     db: AsyncSession = Depends(get_db)
 ):
-<<<<<<< HEAD
+    return await list_judges_service(
+        db,
+        event_id
+    )
     # Fetch participants for the event
     result = await db.execute(select(Participant).where(Participant.event_id == event_id))
     participants = result.scalars().all()
@@ -133,189 +115,4 @@ async def auto_form_teams(
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-=======
 
-    event_config = _load_config(str(event_id))
-
-    constraints = (
-        event_config
-        .get("participants", {})
-        .get("team_matching", {})
-        .get("constraints", [])
-    )
-
-    result = await db.execute(
-        select(Participant).where(
-            Participant.event_id == event_id
-        )
-    )
-
-    participants = result.scalars().all()
-
-    if not participants:
-
-        p_data = [
-
-            {
-                "id": "1",
-                "skills": ["Backend", "ML"],
-                "domain": "AI/ML",
-                "experience_level": "Advanced",
-                "institution": "DTU",
-                "gender": "Female"
-            },
-
-            {
-                "id": "2",
-                "skills": ["Frontend"],
-                "domain": "Web/App Dev",
-                "experience_level": "Beginner",
-                "institution": "NSUT",
-                "gender": "Male"
-            },
-
-            {
-                "id": "3",
-                "skills": ["Design"],
-                "domain": "Web/App Dev",
-                "experience_level": "Intermediate",
-                "institution": "IIITD",
-                "gender": "Female"
-            },
-
-            {
-                "id": "4",
-                "skills": ["ML", "Research"],
-                "domain": "AI/ML",
-                "experience_level": "Advanced",
-                "institution": "BITS",
-                "gender": "Male"
-            },
-
-            {
-                "id": "5",
-                "skills": ["Backend"],
-                "domain": "Cloud/DevOps",
-                "experience_level": "Intermediate",
-                "institution": "DTU",
-                "gender": "Female"
-            },
-
-            {
-                "id": "6",
-                "skills": ["Frontend", "Design"],
-                "domain": "Web/App Dev",
-                "experience_level": "Beginner",
-                "institution": "NSUT",
-                "gender": "Male"
-            },
-
-            {
-                "id": "7",
-                "skills": ["Cybersecurity"],
-                "domain": "Cybersecurity",
-                "experience_level": "Advanced",
-                "institution": "IIITD",
-                "gender": "Female"
-            },
-
-            {
-                "id": "8",
-                "skills": ["DevOps"],
-                "domain": "Cloud/DevOps",
-                "experience_level": "Intermediate",
-                "institution": "BITS",
-                "gender": "Male"
-            }
-
-        ]
-
-    else:
-
-        p_data = [
-
-            {
-                "id": str(p.id),
-
-                "skills": getattr(
-                    p,
-                    "skills",
-                    ["Backend"]
-                ),
-
-                "domain": getattr(
-                    p,
-                    "domain",
-                    "Web/App Dev"
-                ),
-
-                "experience_level": getattr(
-                    p,
-                    "experience_level",
-                    "Intermediate"
-                ),
-
-                "institution": getattr(
-                    p,
-                    "institution",
-                    "Unknown"
-                ),
-
-                "gender": getattr(
-                    p,
-                    "gender",
-                    "Unknown"
-                )
-            }
-
-            for p in participants
-
-        ]
-
-    try:
-
-        teams, leftovers = form_teams(
-            p_data,
-            team_size=team_size,
-            constraints=constraints
-        )
-
-        formatted_teams = []
-
-        for idx, members in teams.items():
-
-            formatted_teams.append({
-
-                "team_name": f"Team {idx + 1}",
-
-                "diversity_score":
-                    compute_team_diversity_score(
-                        members
-                    ),
-
-                "members": members
-
-            })
-
-        return {
-
-            "success": True,
-
-            "constraints_used": constraints,
-
-            "teams": formatted_teams,
-
-            "leftovers": leftovers,
-
-            "message":
-                f"Successfully formed {len(formatted_teams)} teams"
-
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
->>>>>>> feature/team-formation

@@ -13,12 +13,7 @@ from app.core.database import Base
 from app.core.config import settings
 
 # Import your models (only the ones that exist)
-from app.models.user import User
-from app.models.event import Event
-from app.models.participant import Participant
-from app.models.judge import Judge
-from app.models.submission import Submission
-from app.models.report import Report
+from app.models import *
 
 # this is the Alembic Config object
 config = context.config
