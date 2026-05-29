@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -13,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.utils import generate_event_hash
 
 router = APIRouter()
 
@@ -352,13 +352,6 @@ def _data_dir() -> str:
     )
 
 
-_HASH_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-
-def _make_short_hash(event_id: str) -> str:
-    """Derive a short EF-XXXXXX display hash from the event UUID."""
-    digest = hashlib.sha256(event_id.encode()).digest()
-    return "EF-" + "".join(_HASH_CHARSET[b % 36] for b in digest[:6])
 
 
 def _load_index() -> list:
@@ -953,7 +946,7 @@ async def deploy_event(request: SaveConfigRequest):
     event_id = request.event_id or config.get("event_id") or str(uuid.uuid4())
     config["event_id"] = event_id
 
-    short_hash = _make_short_hash(event_id)
+    short_hash = generate_event_hash(event_id)
     config["hash"] = short_hash
 
     now_iso = datetime.utcnow().isoformat() + "Z"

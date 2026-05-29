@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.core.auth_context import AuthContext
 from app.middleware.auth import require_actor_type, require_event_access
 
-from app.models.team import Team as TeamModel
+from app.models.team import Team as TeamModel, TeamMember
 
 from app.schemas.team import (
     Team,
@@ -146,10 +146,18 @@ async def update_team_theme(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
         
-    # Validation for participant: must be in the team (simplified for now)
-    # Ideally we check TeamMember relationship here
     if auth.actor_type == "participant":
-        pass # Add participant team validation here later
+        res_member = await db.execute(
+            select(TeamMember).where(
+                TeamMember.team_id == team_id,
+                TeamMember.participant_id == auth.actor_id,
+            )
+        )
+        if not res_member.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not a member of this team",
+            )
         
     if team_in.theme_id:
         team.theme_id = team_in.theme_id

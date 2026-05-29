@@ -46,10 +46,18 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
-    
+
     actor_type: str
     event_id: str | None = None
     session_id: str | None = None
+
+
+class LoginResponse(TokenResponse):
+    """Extended response for the /auth/login endpoint — includes user profile fields."""
+    name: str
+    email: str
+    role: str
+    organization: str | None = None
 
 
 # =========================================================

@@ -26,18 +26,27 @@ export async function apiCall(endpoint: string, options: RequestInit = {}) {
 
 export const authApi = {
   login: async (firebaseToken: string, role?: string, name?: string) => {
+    // Temporarily store the Firebase token so the request can be authenticated
     localStorage.setItem("auth_token", firebaseToken);
-    return apiCall("/auth/login", {
+    const res = await apiCall("/auth/login", {
       method: "POST",
       body: JSON.stringify({ name, role }),
     });
+    // Replace Firebase token with the EKAM JWT for all subsequent requests
+    localStorage.setItem("auth_token", res.access_token);
+    return res;
   },
   getMe: async () => {
     return apiCall("/auth/me");
   },
-  logout: () => {
+  logout: async () => {
+    try {
+      await apiCall("/auth/logout", { method: "POST" });
+    } catch (_) {
+      // Best-effort — clear local state regardless
+    }
     localStorage.removeItem("auth_token");
-  }
+  },
 };
 
 export const eventsApi = {

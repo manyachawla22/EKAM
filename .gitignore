@@ -9,6 +9,7 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+.claude
 
 # testing
 /coverage
@@ -170,3 +171,7 @@ implementation_plan.md
 task.md
 verification_report.md
 task2.md
+ACTION_PLAN.md
+final_work.md
+implementation_plan_2.md
+project_overview.md

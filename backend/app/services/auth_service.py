@@ -34,6 +34,39 @@ from app.services.judge_auth_service import find_judge_by_email_and_hash
 # ORGANIZER / ADMIN (FIREBASE)
 # =========================================================
 
+async def login_with_profile_service(
+    db: AsyncSession,
+    token_data: dict,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    display_name: str | None = None,
+) -> Dict[str, Any]:
+    """
+    Handle organizer login and return EKAM token merged with user profile.
+    Used by the /auth/login frontend-facing endpoint.
+    """
+    if display_name and not token_data.get("name"):
+        token_data = {**token_data, "name": display_name}
+
+    user = await login_service(db, token_data)
+
+    session = await create_session(
+        db=db,
+        owner_id=str(user.id),
+        owner_type=user.role.value,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+
+    return {
+        **session,
+        "name": user.name or "",
+        "email": user.email or "",
+        "role": user.role.value,
+        "organization": user.organization,
+    }
+
+
 async def login_service(
     db: AsyncSession,
     token_data: dict

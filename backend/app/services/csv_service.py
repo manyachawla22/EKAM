@@ -114,8 +114,8 @@ async def bulk_insert_participants(
             event_id=event_id,
             name=data["name"],
             email=data["email"],
-            organization=data.get("organization"),
-            skills=data.get("skills")
+            institution=data.get("organization"),  # CSV uses 'organization', model uses 'institution'
+            skills=data.get("skills") or [],
         )
         db.add(p)
         count += 1
@@ -138,8 +138,8 @@ async def bulk_insert_judges(
             event_id=event_id,
             name=data["name"],
             email=data["email"],
-            organization=data.get("organization"),
-            expertise=data.get("expertise")
+            institution=data.get("organization"),  # CSV uses 'organization', model uses 'institution'
+            expertise=data.get("expertise") or [],
         )
         db.add(j)
         count += 1

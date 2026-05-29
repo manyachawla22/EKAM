@@ -142,21 +142,20 @@ async def execute_approved_action(
         await execute_judge_assignment(db, approval.payload)
         
     elif approval.request_type == RequestType.email_batch:
-        # from app.services.email_service import execute_approved_email_batch
-        # await execute_approved_email_batch(db, str(approval.id))
-        pass
-        
+        from app.services.email_service import execute_approved_email_batch
+        await execute_approved_email_batch(db, str(approval.id))
+
     elif approval.request_type == RequestType.leaderboard_publish:
-        # publish leaderboard
-        pass
-        
+        pass  # leaderboard is read-only; no mutation needed on publish
+
     elif approval.request_type == RequestType.stage_transition:
         from app.services.pipeline_service import execute_stage_transition
         await execute_stage_transition(db, approval.payload)
-        
+
     elif approval.request_type == RequestType.progression:
-        # execute progression
-        pass
+        # Progression reuses the stage transition executor — both advance teams
+        from app.services.pipeline_service import execute_stage_transition
+        await execute_stage_transition(db, approval.payload)
         
     else:
         raise HTTPException(

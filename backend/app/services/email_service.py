@@ -24,101 +24,113 @@ from app.core.config import settings
 # SENDING LOGIC (STUB)
 # =========================================================
 
-async def _send_email_stub(
+async def _send_via_smtp(
     recipient: str,
     subject: str,
     body: str,
-    email_type: str
+    email_type: str,
 ) -> bool:
     """
-    Real SMTP email sender using Brevo.
+    Sends one email over Brevo SMTP using aiosmtplib.
+    Raises on failure so callers can mark drafts as failed.
+
+    Requirements for delivery:
+      - SMTP_USER / SMTP_PASSWORD must be valid Brevo credentials
+      - EMAIL_FROM must be a verified sender in your Brevo account
     """
+    message = EmailMessage()
+    message["From"] = settings.EMAIL_FROM
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
 
-    try:
-        message = EmailMessage()
+    await aiosmtplib.send(
+        message,
+        hostname=settings.SMTP_HOST,
+        port=settings.SMTP_PORT,
+        username=settings.SMTP_USER,
+        password=settings.SMTP_PASSWORD,
+        start_tls=True,
+        timeout=30,
+    )
 
-        message["From"] = settings.EMAIL_FROM
-        message["To"] = recipient
-        message["Subject"] = subject
-
-        message.set_content(body)
-
-        await aiosmtplib.send(
-            message,
-            hostname=settings.SMTP_HOST,
-            port=settings.SMTP_PORT,
-            username=settings.SMTP_USER,
-            password=settings.SMTP_PASSWORD,
-            start_tls=True,
-        )
-
-        print("=" * 50)
-        print(f"[{email_type.upper()}] EMAIL SENT")
-        print(f"TO: {recipient}")
-        print("=" * 50)
-
-        return True
-
-    except Exception as e:
-        print("=" * 50)
-        print("[EMAIL ERROR]")
-        print(str(e))
-        print("=" * 50)
-
-        return False
+    print(f"[email_service] SENT [{email_type.upper()}] → {recipient}")
+    return True
 
 
 async def send_email(
     db: AsyncSession,
-    email_draft: EmailDraft
+    email_draft: EmailDraft,
 ) -> bool:
-    """Attempts to send a drafted email and updates its status."""
-    
-    success = await _send_email_stub(
-        recipient=email_draft.recipient_email,
-        subject=email_draft.subject,
-        body=email_draft.body_text or email_draft.body_html or "",
-        email_type=email_draft.email_type.value
-    )
-    
-    if success:
+    """
+    Attempts to send a drafted email and updates its status.
+    Returns True on success, False on failure (never raises).
+    """
+    try:
+        await _send_via_smtp(
+            recipient=email_draft.recipient_email,
+            subject=email_draft.subject,
+            body=email_draft.body_text or email_draft.body_html or "",
+            email_type=email_draft.email_type.value,
+        )
         email_draft.status = EmailStatus.sent
         email_draft.sent_at = datetime.now(timezone.utc)
-    else:
+        await db.commit()
+        return True
+    except Exception as exc:
+        print(f"[email_service] FAILED to send to {email_draft.recipient_email}: {exc}")
         email_draft.status = EmailStatus.failed
-        
-    await db.commit()
-    return success
+        await db.commit()
+        return False
 
 
 # =========================================================
 # IMMEDIATE EMAILS (No Approval Required)
 # =========================================================
 
-async def send_otp_email(
-    email: str,
-    otp: str
-):
-    """Immediate delivery for OTP."""
-    await _send_email_stub(
-        recipient=email,
-        subject="Your EKAM Login Code",
-        body=f"Your OTP is: {otp}\nIt expires in 10 minutes.",
-        email_type="otp"
-    )
+async def send_otp_email(email: str, otp: str):
+    """
+    Fixed-template OTP email — sends immediately, no approval required.
+    Uses a structured template (not AI-drafted) because delivery speed matters.
+    """
+    try:
+        await _send_via_smtp(
+            recipient=email,
+            subject="Your EKAM Login Code",
+            body=(
+                f"Hello,\n\n"
+                f"Your one-time login code for EKAM is:\n\n"
+                f"    {otp}\n\n"
+                f"This code expires in 10 minutes. Do not share it with anyone.\n\n"
+                f"If you did not request this code, you can safely ignore this email.\n\n"
+                f"Team EKAM"
+            ),
+            email_type="otp",
+        )
+    except Exception as exc:
+        print(f"[email_service] OTP email failed for {email}: {exc}")
 
 
-async def send_magic_link_email(
-    email: str,
-    link: str
-):
-    """Immediate delivery for Magic Links."""
-    await _send_email_stub(
-        recipient=email,
-        subject="Your EKAM Magic Login Link",
-        body=f"Click the following link to login: {link}\nIt expires in 48 hours.",
-        email_type="magic_link"
-    )
+async def send_magic_link_email(email: str, link: str):
+    """
+    Fixed-template magic link email — sends immediately, no approval required.
+    """
+    try:
+        await _send_via_smtp(
+            recipient=email,
+            subject="Your EKAM Magic Login Link",
+            body=(
+                f"Hello,\n\n"
+                f"Click the link below to log in to EKAM:\n\n"
+                f"    {link}\n\n"
+                f"This link expires in 48 hours and can only be used once.\n\n"
+                f"If you did not request this, you can safely ignore this email.\n\n"
+                f"Team EKAM"
+            ),
+            email_type="magic_link",
+        )
+    except Exception as exc:
+        print(f"[email_service] Magic link email failed for {email}: {exc}")
 
 
 # =========================================================
@@ -221,13 +233,11 @@ async def execute_approved_email_batch(
     
     sent_count = 0
     for draft in drafts:
-        draft.status = EmailStatus.approved
-        await db.commit() # commit status change before sending
-        
+        # send_email() handles status update to sent/failed and commits internally
         success = await send_email(db, draft)
         if success:
             sent_count += 1
-            
+
     return sent_count
 
 

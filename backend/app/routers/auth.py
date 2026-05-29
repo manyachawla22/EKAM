@@ -14,6 +14,7 @@ from app.core.auth_context import AuthContext
 
 from app.schemas.auth import (
     TokenResponse,
+    LoginResponse,
     RequestAccess,
     VerifyOTPRequest,
     MagicLoginRequest,
@@ -23,6 +24,7 @@ from app.schemas.auth import (
 
 from app.services.auth_service import (
     login_service,
+    login_with_profile_service,
     request_access_service,
     verify_otp_service,
     magic_login_service,
@@ -31,11 +33,44 @@ from app.services.auth_service import (
     me_service,
 )
 
+from pydantic import BaseModel
+
+
+class _LoginBody(BaseModel):
+    name: str | None = None
+    role: str | None = None
+
 
 router = APIRouter(
     prefix="/auth",
     tags=["Auth"]
 )
+
+
+@router.post("/login", response_model=LoginResponse)
+async def login(
+    request: Request,
+    body: _LoginBody = None,
+    token_data: dict = Depends(verify_firebase_only),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    POST /auth/login — frontend-compatible organizer login.
+    Send the Firebase ID token as Authorization: Bearer <token>.
+    Optionally include { name, role } in the JSON body (used during signup).
+    Returns EKAM JWT + user profile fields.
+    """
+    ip_address = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    display_name = body.name if body else None
+
+    return await login_with_profile_service(
+        db=db,
+        token_data=token_data,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        display_name=display_name,
+    )
 
 
 @router.post("/firebase-login", response_model=TokenResponse)
