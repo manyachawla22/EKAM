@@ -43,7 +43,6 @@ next-env.d.ts
 
 
 # Firebase credentials (CRITICAL - never commit)
-*.json
 *firebase-adminsdk*.json
 *service-account*.json
 
@@ -94,6 +93,7 @@ backend/app/team_formation/__pycache__/
 backend/app/utils/__pycache__/
 backend/alembic/__pycache__/
 backend/alembic/versions/__pycache__/
+backend/data
 *.pyc
 *.pyo
 *.pyd
@@ -110,7 +110,6 @@ backend/.env.*
 frontend/.env.*
 
 # Firebase credentials (CRITICAL)
-*.json
 *firebase-adminsdk*.json
 *service-account*.json
 ekam-aaa95-firebase-adminsdk-*.json
