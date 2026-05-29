@@ -46,3 +46,5 @@ class ParticipantResponse(ParticipantBase):
 
     class Config:
         from_attributes = True
+
+Participant = ParticipantResponse

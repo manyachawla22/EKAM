@@ -1,52 +1,63 @@
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.judge import Judge
 
 
-class JudgeService:
+async def create_judge_service(
+    db: AsyncSession,
+    judge_data,
+    current_user=None
+):
 
-    @staticmethod
-    async def create_judge(
-        db,
-        judge_data
-    ):
+    existing = await db.execute(
+        select(Judge).where(
+            Judge.event_id == judge_data.event_id,
+            Judge.email == judge_data.email
+        )
+    )
 
-        existing = await db.execute(
-            select(Judge).where(
-                Judge.event_id == judge_data.event_id,
-                Judge.email == judge_data.email
-            )
+    if existing.scalars().first():
+        raise HTTPException(
+            status_code=400,
+            detail="Judge already registered"
         )
 
-        if existing.scalars().first():
-            raise HTTPException(
-                status_code=400,
-                detail="Judge already exists"
-            )
+    judge = Judge(
+        **judge_data.model_dump()
+    )
 
-        judge = Judge(
-            **judge_data.model_dump()
+    db.add(judge)
+
+    await db.commit()
+    await db.refresh(judge)
+
+    return judge
+
+
+async def list_judges_service(
+    db: AsyncSession,
+    event_id
+):
+
+    result = await db.execute(
+        select(Judge).where(
+            Judge.event_id == event_id
         )
+    )
 
-        db.add(judge)
-
-        await db.commit()
-        await db.refresh(judge)
-
-        return judge
+    return result.scalars().all()
 
 
-    @staticmethod
-    async def list_judges(
-        db,
-        event_id
-    ):
-
-        result = await db.execute(
-            select(Judge).where(
-                Judge.event_id == event_id
-            )
+async def get_judge_by_id_service(
+    db: AsyncSession,
+    judge_id: str
+):
+    result = await db.execute(
+        select(Judge).where(
+            Judge.id == judge_id
         )
+    )
 
-        return result.scalars().all()
+    return result.scalars().first()

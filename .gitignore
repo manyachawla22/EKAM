@@ -164,3 +164,8 @@ reports/
 # Keep example files
 !.env.example
 !*.example.json
+
+#extras
+implementation_plan.md
+task.md
+verification_report.md

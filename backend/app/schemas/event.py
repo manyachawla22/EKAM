@@ -51,6 +51,7 @@ class EventBase(BaseModel):
 
 class EventCreate(EventBase):
     hash: str
+    organizer_id: UUID
 
 
 class EventUpdate(BaseModel):
@@ -80,3 +81,5 @@ class EventResponse(EventBase):
 
     class Config:
         from_attributes = True
+
+Event = EventResponse

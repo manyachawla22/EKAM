@@ -60,3 +60,6 @@ class EvaluationResponse(EvaluationBase):
 
     class Config:
         from_attributes = True
+
+Submission = SubmissionResponse
+Evaluation = EvaluationResponse

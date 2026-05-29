@@ -52,3 +52,6 @@ class TeamMemberResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+Team = TeamResponse
+TeamMember = TeamMemberResponse

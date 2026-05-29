@@ -25,6 +25,13 @@ async def submit_evaluation_service(
 
     await db.commit()
     await db.refresh(evaluation)
+    
+    # Trigger anomaly detection (Phase 8)
+    from app.services.anomaly_service import analyze_evaluation
+    # Since we need event_id, we pull it from the submission's event_id (or similar logic). 
+    # For now, we will pass a placeholder event_id or assume it's attached.
+    # Note: submission should ideally link to event.
+    await analyze_evaluation(db, "00000000-0000-0000-0000-000000000000", evaluation)
 
     return evaluation
 

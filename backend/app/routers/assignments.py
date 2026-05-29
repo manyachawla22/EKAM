@@ -1,3 +1,7 @@
+"""
+EKAM Assignments Router
+"""
+
 from uuid import UUID
 
 from fastapi import (
@@ -10,15 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 
-from app.middleware.auth import require_role
-
-from app.models.user import (
-    User,
-    UserRole
-)
+from app.middleware.auth import require_actor_type
+from app.core.auth_context import AuthContext
 
 from app.services.assignment_service import (
-    assign_judge_service,
+    assign_single_judge_service,
     assign_team_member_service
 )
 
@@ -41,19 +41,15 @@ router = APIRouter(
 @router.post(
     "/judge",
     response_model=JudgeAssignment,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def assign_judge(
     assignment_in: JudgeAssignmentCreate,
-    current_user: User = Depends(
-        require_role([
-            UserRole.organizer,
-            UserRole.admin
-        ])
-    ),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
-    return await assign_judge_service(
+    return await assign_single_judge_service(
         db,
         assignment_in
     )
@@ -62,16 +58,12 @@ async def assign_judge(
 @router.post(
     "/team-member",
     response_model=TeamMember,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def assign_team_member(
     member_in: TeamMemberCreate,
-    current_user: User = Depends(
-        require_role([
-            UserRole.organizer,
-            UserRole.admin
-        ])
-    ),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
     return await assign_team_member_service(
