@@ -218,12 +218,31 @@ async def me_service(
     auth: AuthContext
 ) -> Dict[str, Any]:
     """Return the profile for the currently authenticated actor."""
-    
+
+    # MeResponse declares `profile: Any` — Pydantic v2 can't serialize a raw
+    # SQLAlchemy ORM object behind that, so flatten the entity to a plain
+    # dict of column values before returning.
+    entity = auth.entity
+    profile: Dict[str, Any] = {}
+    if entity is not None:
+        try:
+            mapper = entity.__class__.__mapper__  # SQLAlchemy mapper
+            for col in mapper.columns:
+                val = getattr(entity, col.key, None)
+                # Convert UUIDs and enums to JSON-safe primitives
+                if hasattr(val, "value") and not isinstance(val, (str, int, float, bool)):
+                    val = val.value
+                profile[col.key] = val
+        except Exception:
+            profile = {}
+
     return {
         "id": auth.actor_id,
         "actor_type": auth.actor_type,
         "event_id": auth.event_id,
-        "profile": auth.entity,
-        "permissions": auth.permissions,
-        "is_event_scoped": auth.is_event_scoped
+        "profile": profile,
+        "permissions": [
+            p.value if hasattr(p, "value") else p for p in (auth.permissions or [])
+        ],
+        "is_event_scoped": auth.is_event_scoped,
     }

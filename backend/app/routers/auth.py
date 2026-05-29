@@ -49,23 +49,34 @@ async def firebase_login(
     The ID token must be sent in the Authorization header as Bearer token.
     This also creates a JWT session.
     """
-    
-    # 1. Sync Firebase user to local DB
-    user = await login_service(db, token_data)
-    
-    # 2. Issue an EKAM session for them
-    from app.services.jwt_service import create_session
-    
-    ip_address = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
+    import traceback
+    from fastapi import HTTPException
 
-    return await create_session(
-        db=db,
-        owner_id=str(user.id),
-        owner_type=user.role.value,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
+    try:
+        # 1. Sync Firebase user to local DB
+        user = await login_service(db, token_data)
+
+        # 2. Issue an EKAM session for them
+        from app.services.jwt_service import create_session
+
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
+        return await create_session(
+            db=db,
+            owner_id=str(user.id),
+            owner_type=user.role.value,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"firebase-login failed: {type(e).__name__}: {e}",
+        )
 
 
 @router.post("/request-access")

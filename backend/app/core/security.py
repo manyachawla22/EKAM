@@ -29,24 +29,48 @@ if not settings.MOCK_AUTH and settings.FIREBASE_CREDENTIALS_PATH:
 
 
 def _verify_firebase_token(token: str) -> dict:
-    """Verify a Firebase ID token and return decoded claims."""
-    try:
-        decoded_token = auth.verify_id_token(
-            token,
-            clock_skew_seconds=10
-        )
-        return {
-            "uid": decoded_token.get("uid"),
-            "email": decoded_token.get("email", ""),
-            "name": decoded_token.get("name", ""),
-            "token_source": "firebase",
-        }
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid Firebase credentials: {str(e)}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    """Verify a Firebase ID token and return decoded claims.
+
+    Retries transient network failures (ConnectionResetError / TimeoutError)
+    when the Firebase Admin SDK fetches Google's signing keys. Without a
+    retry a flaky connection causes a real 401 on the user side even though
+    their token is fine.
+    """
+    import time
+
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            decoded_token = auth.verify_id_token(
+                token,
+                clock_skew_seconds=10,
+            )
+            return {
+                "uid": decoded_token.get("uid"),
+                "email": decoded_token.get("email", ""),
+                "name": decoded_token.get("name", ""),
+                "token_source": "firebase",
+            }
+        except (ConnectionResetError, ConnectionAbortedError, TimeoutError) as e:
+            last_err = e
+            time.sleep(0.4 * (attempt + 1))
+            continue
+        except Exception as e:
+            # Real verification failure (bad token, expired, etc.) — don't retry.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid Firebase credentials: {str(e)}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    # Exhausted retries on a network error.
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Could not reach Google to verify the Firebase token after 3 "
+            f"attempts: {last_err}. Check your network / firewall."
+        ),
+    )
 
 
 def _verify_ekam_jwt(token: str) -> dict:
