@@ -1,14 +1,17 @@
+"""
+EKAM Reports Router
+"""
+
 from uuid import UUID
 from typing import List
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 
-from app.middleware.auth import require_role
-
-from app.models.user import User, UserRole
+from app.middleware.auth import require_actor_type, require_event_access
+from app.core.auth_context import AuthContext
 
 from app.schemas.report import (
     Report,
@@ -29,18 +32,20 @@ router = APIRouter(
 @router.post(
     "/generate",
     response_model=Report,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def generate_report(
     report_in: ReportCreate,
-    current_user: User = Depends(
-        require_role([
-            UserRole.organizer,
-            UserRole.admin
-        ])
-    ),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
+    if not auth.can_access_event(str(report_in.event_id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No event access"
+        )
+        
     return await create_report_service(
         db,
         report_in
@@ -49,16 +54,14 @@ async def generate_report(
 
 @router.get(
     "/{event_id}",
-    response_model=List[Report]
+    response_model=List[Report],
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
 )
 async def list_reports(
     event_id: UUID,
-    current_user: User = Depends(
-        require_role([
-            UserRole.organizer,
-            UserRole.admin
-        ])
-    ),
     db: AsyncSession = Depends(get_db)
 ):
     return await list_reports_service(

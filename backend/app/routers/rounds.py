@@ -1,14 +1,17 @@
+"""
+EKAM Rounds Router
+"""
+
 from uuid import UUID
 from typing import List
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 
-from app.middleware.auth import require_role
-
-from app.models.user import User, UserRole
+from app.middleware.auth import require_actor_type, require_event_access
+from app.core.auth_context import AuthContext
 
 from app.schemas.round import (
     Round,
@@ -29,40 +32,39 @@ router = APIRouter(
 @router.post(
     "/create",
     response_model=Round,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def create_round(
     round_in: RoundCreate,
-    current_user: User = Depends(
-        require_role([
-            UserRole.organizer,
-            UserRole.admin
-        ])
-    ),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
+    """Create a new round."""
+    if not auth.can_access_event(str(round_in.event_id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No event access"
+        )
+        
     return await create_round_service(
         db,
         round_in,
-        current_user
+        auth.entity
     )
 
 
 @router.get(
     "/{event_id}",
-    response_model=List[Round]
+    response_model=List[Round],
+    dependencies=[
+        Depends(require_actor_type(["organizer", "judge", "participant"])),
+        Depends(require_event_access("event_id"))
+    ]
 )
 async def list_rounds(
     event_id: UUID,
-    current_user: User = Depends(require_role([
-        UserRole.organizer,
-        UserRole.admin,
-        UserRole.judge,
-        UserRole.participant
-    ])),
     db: AsyncSession = Depends(get_db)
 ):
-    return await list_rounds_service(
-        db,
-        event_id
-    )
+    """List all rounds for an event."""
+    return await list_rounds_service(db, event_id)

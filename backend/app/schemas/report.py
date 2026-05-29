@@ -11,10 +11,12 @@ class ReportBase(BaseModel):
 class ReportCreate(ReportBase):
     event_id: UUID
 
-class Report(ReportBase):
+class ReportResponse(ReportBase):
     id: UUID
     event_id: UUID
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+Report = ReportResponse

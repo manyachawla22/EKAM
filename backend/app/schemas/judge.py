@@ -60,3 +60,6 @@ class JudgeAssignmentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+Judge = JudgeResponse
+JudgeAssignment = JudgeAssignmentResponse

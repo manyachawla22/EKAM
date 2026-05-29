@@ -14,12 +14,29 @@ class Settings(BaseSettings):
     POSTGRES_PORT: str 
     DATABASE_URL: str
     
-    FIREBASE_CREDENTIALS_PATH:str
+    FIREBASE_CREDENTIALS_PATH: str
     MOCK_AUTH: bool
     DEBUG: bool
      
     GROQ_API_KEY: str 
     GROQ_MODEL: str
+
+    # ----- JWT Configuration -----
+    JWT_SECRET_KEY: str 
+    JWT_ALGORITHM: str 
+    ACCESS_TOKEN_EXPIRE_MINUTES: int 
+    REFRESH_TOKEN_EXPIRE_DAYS: int 
+
+    # ----- Email Configuration (placeholders for Phase 5) -----
+    SMTP_HOST: str
+    SMTP_PORT: int
+    SMTP_USER: str
+    SMTP_PASSWORD: str
+
+    EMAIL_FROM: str
+
+    # ----- Frontend URL for magic links -----
+    FRONTEND_URL: str = "http://localhost:3000"
     
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:

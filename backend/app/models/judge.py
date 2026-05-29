@@ -48,10 +48,6 @@ class Judge(Base):
     rating = Column(Float, default=5.0)
 
     # OTP Auth Fields
-    otp_code = Column(String, nullable=True)
-
-    otp_expiry = Column(DateTime(timezone=True), nullable=True)
-
     is_verified = Column(Boolean, default=False)
 
     last_login = Column(DateTime(timezone=True), nullable=True)

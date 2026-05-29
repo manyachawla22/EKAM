@@ -1,54 +1,65 @@
+import uuid
+from fastapi import HTTPException
 from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.participant import Team, TeamMember
-
-
-class TeamService:
-
-    @staticmethod
-    async def create_team(
-        db,
-        team_data
-    ):
-
-        team = Team(**team_data.model_dump())
-
-        db.add(team)
-
-        await db.commit()
-        await db.refresh(team)
-
-        return team
+from app.models.team import Team, TeamMember
+from app.models.participant import Participant
 
 
-    @staticmethod
-    async def add_team_member(
-        db,
-        member_data
-    ):
+async def create_team_service(
+    db: AsyncSession,
+    team_data,
+    current_user=None
+):
 
-        member = TeamMember(
-            **member_data.model_dump()
+    existing = await db.execute(
+        select(Team).where(
+            Team.event_id == team_data.event_id,
+            Team.name == team_data.name
+        )
+    )
+
+    if existing.scalars().first():
+        raise HTTPException(
+            status_code=400,
+            detail="Team name already taken"
         )
 
-        db.add(member)
+    team = Team(
+        **team_data.model_dump()
+    )
 
-        await db.commit()
-        await db.refresh(member)
+    db.add(team)
 
-        return member
+    await db.commit()
+    await db.refresh(team)
+
+    return team
 
 
-    @staticmethod
-    async def list_teams(
-        db,
-        event_id
-    ):
+async def list_teams_service(
+    db: AsyncSession,
+    event_id
+):
 
-        result = await db.execute(
-            select(Team).where(
-                Team.event_id == event_id
-            )
+    result = await db.execute(
+        select(Team).where(
+            Team.event_id == event_id
         )
+    )
 
-        return result.scalars().all()
+    return result.scalars().all()
+
+
+async def get_team_by_id_service(
+    db: AsyncSession,
+    team_id: str
+):
+    result = await db.execute(
+        select(Team).where(
+            Team.id == team_id
+        )
+    )
+
+    return result.scalars().first()
