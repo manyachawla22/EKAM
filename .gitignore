@@ -18,6 +18,7 @@
 /.next/
 /out/
 
+
 # production
 /build
 
@@ -172,3 +173,6 @@ errors.md
 final_work.md
 IMPLEMENTATION.md
 project_overview.md
+
+
+frontend_new/package-lock.json
