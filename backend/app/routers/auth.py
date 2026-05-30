@@ -60,17 +60,29 @@ async def login(
     Optionally include { name, role } in the JSON body (used during signup).
     Returns EKAM JWT + user profile fields.
     """
-    ip_address = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
-    display_name = body.name if body else None
+    import traceback
+    from fastapi import HTTPException as _HTTPException
 
-    return await login_with_profile_service(
-        db=db,
-        token_data=token_data,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        display_name=display_name,
-    )
+    try:
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+        display_name = body.name if body else None
+
+        return await login_with_profile_service(
+            db=db,
+            token_data=token_data,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            display_name=display_name,
+        )
+    except _HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise _HTTPException(
+            status_code=500,
+            detail=f"Login failed: {type(exc).__name__}: {exc}",
+        )
 
 
 @router.post("/firebase-login", response_model=TokenResponse)

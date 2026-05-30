@@ -1,23 +1,19 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { AppProvider } from "@/lib/store";
+import { Inter } from "next/font/google";
+import { Toaster } from "sonner";
+import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Ekam — Intelligent Event Orchestration",
-  description: "Role-based event management and orchestration platform for hackathons, case competitions, and coding contests.",
+  title: "EKAM — Organize. Compete. Excel.",
+  description:
+    "The all-in-one platform for running hackathons, coding contests, and team challenges. AI-powered event creation with smart team formation and seamless judge management.",
 };
 
 export default function RootLayout({
@@ -26,17 +22,22 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
-    >
-      <body className="min-h-full flex flex-col">
-        <AppProvider>
-          <TooltipProvider>
-            {children}
-            <Toaster richColors position="bottom-right" />
-          </TooltipProvider>
-        </AppProvider>
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <body className="bg-[#0a0a0a] text-white antialiased">
+        <AuthProvider>
+          {children}
+          <Toaster
+            theme="dark"
+            position="top-right"
+            toastOptions={{
+              style: {
+                background: "#111",
+                border: "1px solid #222",
+                color: "#fff",
+              },
+            }}
+          />
+        </AuthProvider>
       </body>
     </html>
   );

@@ -167,11 +167,9 @@ reports/
 !*.example.json
 
 #extras
-implementation_plan.md
-task.md
-verification_report.md
-task2.md
-ACTION_PLAN.md
+EMAIL_FIX.md
+email.md
+errors.md
 final_work.md
-implementation_plan_2.md
+IMPLEMENTATION.md
 project_overview.md

@@ -2,6 +2,7 @@ import uuid
 from fastapi import HTTPException
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.team import Team, TeamMember
 from app.models.participant import Participant
@@ -44,9 +45,9 @@ async def list_teams_service(
 ):
 
     result = await db.execute(
-        select(Team).where(
-            Team.event_id == event_id
-        )
+        select(Team)
+        .where(Team.event_id == event_id)
+        .options(selectinload(Team.members))
     )
 
     return result.scalars().all()

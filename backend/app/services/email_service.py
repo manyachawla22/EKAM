@@ -6,55 +6,164 @@ Uses a draft-based model for batched emails (requires approval).
 OTP/Magic links bypass approval for immediate delivery.
 """
 
+import asyncio
 from typing import List
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+import resend
 
 from app.models.email import EmailDraft, EmailType, EmailStatus
 from app.models.approval import RequestType
 
 from app.services.approval_service import create_approval_request
-import aiosmtplib
-from email.message import EmailMessage
 from app.core.config import settings
 
 
 # =========================================================
-# SENDING LOGIC (STUB)
+# EMAIL TEMPLATES
 # =========================================================
 
-async def _send_via_smtp(
+def _participant_login_template(event_name: str, event_hash: str, frontend_url: str) -> str:
+    return (
+        f"Hello,\n\n"
+        f"Your team has been formed for {event_name}!\n\n"
+        f"To access the participant portal, log in with:\n"
+        f"  Event Hash : {event_hash}\n"
+        f"  Your Email : (the address this email was sent to)\n\n"
+        f"Visit {frontend_url}/auth, enter your event hash and email, then request your OTP.\n"
+        f"The OTP will be sent to this email address.\n\n"
+        f"Best of luck,\n"
+        f"Team EKAM"
+    )
+
+
+def _judge_login_template(event_name: str, event_hash: str, frontend_url: str) -> str:
+    return (
+        f"Hello,\n\n"
+        f"You have been assigned as a judge for {event_name}.\n\n"
+        f"To access the judge portal, log in with:\n"
+        f"  Event Hash : {event_hash}\n"
+        f"  Your Email : (the address this email was sent to)\n\n"
+        f"Visit {frontend_url}/auth, enter your event hash and email, then request your OTP.\n\n"
+        f"Teams are looking forward to your evaluation.\n\n"
+        f"Team EKAM"
+    )
+
+
+def _round_advancement_template(event_name: str, round_name: str) -> str:
+    return (
+        f"Hello,\n\n"
+        f"Congratulations! Your team has advanced to {round_name} in {event_name}.\n\n"
+        f"Check the participant portal for submission deadlines and further details.\n\n"
+        f"Keep it up!\n\n"
+        f"Team EKAM"
+    )
+
+
+# =========================================================
+# DRAFT HELPERS (called by approval execution)
+# =========================================================
+
+async def draft_participant_login_emails(
+    db: AsyncSession,
+    event_id: str,
+    event_name: str,
+    event_hash: str,
+    participant_emails: List[str],
+    requested_by: str,
+):
+    """Draft login emails for all participants and queue for approval."""
+    if not participant_emails:
+        return None
+    body = _participant_login_template(event_name, event_hash, settings.FRONTEND_URL)
+    return await draft_bulk_emails(
+        db=db,
+        event_id=event_id,
+        requested_by=requested_by,
+        email_type=EmailType.team_assignment,
+        subject=f"{event_name} — Your Team Is Set! Login Details Inside",
+        body_html="",
+        body_text=body,
+        recipients=participant_emails,
+    )
+
+
+async def draft_judge_login_emails(
+    db: AsyncSession,
+    event_id: str,
+    event_name: str,
+    event_hash: str,
+    judge_emails: List[str],
+    requested_by: str,
+):
+    """Draft login emails for all assigned judges and queue for approval."""
+    if not judge_emails:
+        return None
+    body = _judge_login_template(event_name, event_hash, settings.FRONTEND_URL)
+    return await draft_bulk_emails(
+        db=db,
+        event_id=event_id,
+        requested_by=requested_by,
+        email_type=EmailType.invitation,
+        subject=f"{event_name} — Judge Assignment Confirmed",
+        body_html="",
+        body_text=body,
+        recipients=judge_emails,
+    )
+
+
+async def draft_round_advancement_emails(
+    db: AsyncSession,
+    event_id: str,
+    event_name: str,
+    round_name: str,
+    participant_emails: List[str],
+    requested_by: str,
+):
+    """Draft round advancement emails and queue for approval."""
+    if not participant_emails:
+        return None
+    body = _round_advancement_template(event_name, round_name)
+    return await draft_bulk_emails(
+        db=db,
+        event_id=event_id,
+        requested_by=requested_by,
+        email_type=EmailType.stage_update,
+        subject=f"Congratulations! You've Advanced — {event_name}",
+        body_html="",
+        body_text=body,
+        recipients=participant_emails,
+    )
+
+
+# =========================================================
+# SENDING LOGIC
+# =========================================================
+
+async def _send_via_resend(
     recipient: str,
     subject: str,
     body: str,
     email_type: str,
+    is_html: bool = False,
 ) -> bool:
     """
-    Sends one email over Brevo SMTP using aiosmtplib.
+    Sends one email via the Resend SDK.
     Raises on failure so callers can mark drafts as failed.
-
-    Requirements for delivery:
-      - SMTP_USER / SMTP_PASSWORD must be valid Brevo credentials
-      - EMAIL_FROM must be a verified sender in your Brevo account
+    API key is read from settings.SMTP_PASSWORD (Resend API key stored there).
     """
-    message = EmailMessage()
-    message["From"] = settings.EMAIL_FROM
-    message["To"] = recipient
-    message["Subject"] = subject
-    message.set_content(body)
+    resend.api_key = settings.SMTP_PASSWORD
 
-    await aiosmtplib.send(
-        message,
-        hostname=settings.SMTP_HOST,
-        port=settings.SMTP_PORT,
-        username=settings.SMTP_USER,
-        password=settings.SMTP_PASSWORD,
-        start_tls=True,
-        timeout=30,
-    )
+    params: resend.Emails.SendParams = {
+        "from": settings.EMAIL_FROM,
+        "to": [recipient],
+        "subject": subject,
+        "html" if is_html else "text": body,
+    }
 
-    print(f"[email_service] SENT [{email_type.upper()}] → {recipient}")
+    response = await asyncio.to_thread(resend.Emails.send, params)
+    print(f"[email_service] SENT [{email_type.upper()}] → {recipient}, id={response['id']}")
     return True
 
 
@@ -67,11 +176,12 @@ async def send_email(
     Returns True on success, False on failure (never raises).
     """
     try:
-        await _send_via_smtp(
+        await _send_via_resend(
             recipient=email_draft.recipient_email,
             subject=email_draft.subject,
-            body=email_draft.body_text or email_draft.body_html or "",
+            body=email_draft.body_html or email_draft.body_text or "",
             email_type=email_draft.email_type.value,
+            is_html=bool(email_draft.body_html),
         )
         email_draft.status = EmailStatus.sent
         email_draft.sent_at = datetime.now(timezone.utc)
@@ -94,7 +204,7 @@ async def send_otp_email(email: str, otp: str):
     Uses a structured template (not AI-drafted) because delivery speed matters.
     """
     try:
-        await _send_via_smtp(
+        await _send_via_resend(
             recipient=email,
             subject="Your EKAM Login Code",
             body=(
@@ -116,7 +226,7 @@ async def send_magic_link_email(email: str, link: str):
     Fixed-template magic link email — sends immediately, no approval required.
     """
     try:
-        await _send_via_smtp(
+        await _send_via_resend(
             recipient=email,
             subject="Your EKAM Magic Login Link",
             body=(

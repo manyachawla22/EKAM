@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import groq as _groq
 from groq import Groq
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.utils import generate_event_hash
+from app.services.csv_service import parse_participant_csv, parse_judge_csv
 
 router = APIRouter()
 
@@ -384,6 +385,34 @@ def _save_config(event_id: str, config: dict) -> str:
     with open(path, "w") as f:
         json.dump(config, f, indent=2, default=str)
     return path
+
+
+# ── Roster (participants / judges) file storage ─────────────────────────────────
+# Deployed events live as JSON files keyed by event_id (see _save_config), not in
+# the SQL events table. Their participant/judge rosters are stored the same way so
+# CSV upload and listing work without a DB-side event row.
+
+def _event_exists(event_id: str) -> bool:
+    return os.path.exists(os.path.join(_data_dir(), event_id, "event.json"))
+
+
+def _roster_path(event_id: str, kind: str) -> str:
+    return os.path.join(_data_dir(), event_id, f"{kind}.json")
+
+
+def _load_roster(event_id: str, kind: str) -> list:
+    path = _roster_path(event_id, kind)
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
+
+
+def _save_roster(event_id: str, kind: str, items: list) -> None:
+    dirpath = os.path.join(_data_dir(), event_id)
+    os.makedirs(dirpath, exist_ok=True)
+    with open(_roster_path(event_id, kind), "w") as f:
+        json.dump(items, f, indent=2, default=str)
 
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
@@ -991,6 +1020,157 @@ async def get_deployed_event(hash: str):
     if not entry:
         raise HTTPException(status_code=404, detail="Event not found")
     return _load_config(entry["event_id"])
+
+
+# ── Per-event roster endpoints (by event_id) ────────────────────────────────────
+# These use a two-segment path (/events/{event_id}/...) so they never collide with
+# the single-segment /events/{hash} lookup above.
+
+class ParticipantEntry(BaseModel):
+    name: str
+    email: str
+    institution: Optional[str] = ""
+    skills: Optional[List[str]] = None
+
+
+class JudgeEntry(BaseModel):
+    name: str
+    email: str
+    institution: Optional[str] = ""
+    expertise: Optional[List[str]] = None
+
+
+def _require_event(event_id: str) -> None:
+    if not _event_exists(event_id):
+        raise HTTPException(status_code=404, detail="Event not found")
+
+
+@router.get("/events/{event_id}/detail")
+async def get_event_detail(event_id: str):
+    _require_event(event_id)
+    return _load_config(event_id)
+
+
+@router.get("/events/{event_id}/participants")
+async def list_event_participants(event_id: str):
+    _require_event(event_id)
+    return _load_roster(event_id, "participants")
+
+
+@router.post("/events/{event_id}/participants")
+async def add_event_participant(event_id: str, entry: ParticipantEntry):
+    _require_event(event_id)
+    roster = _load_roster(event_id, "participants")
+    if any((p.get("email") or "").lower() == entry.email.lower() for p in roster):
+        raise HTTPException(status_code=409, detail="A participant with this email already exists")
+    roster.append({
+        "id": str(uuid.uuid4()),
+        "name": entry.name,
+        "email": entry.email,
+        "institution": entry.institution or "",
+        "skills": entry.skills or [],
+        "registration_status": "pending",
+    })
+    _save_roster(event_id, "participants", roster)
+    return roster[-1]
+
+
+@router.post("/events/{event_id}/participants/upload-csv")
+async def upload_event_participants_csv(event_id: str, file: UploadFile = File(...)):
+    _require_event(event_id)
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    rows = parse_participant_csv(content)
+
+    roster = _load_roster(event_id, "participants")
+    seen = {(p.get("email") or "").lower() for p in roster}
+    added = 0
+    for r in rows:
+        email = (r.get("email") or "").lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": r.get("name", ""),
+            "email": r.get("email", ""),
+            "institution": r.get("organization") or "",
+            "skills": r.get("skills") or [],
+            "registration_status": "pending",
+        })
+        added += 1
+
+    _save_roster(event_id, "participants", roster)
+    return {
+        "message": f"Imported {added} participant(s)"
+        + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
+        "count": added,
+        "total": len(roster),
+        "participants": roster,
+    }
+
+
+@router.get("/events/{event_id}/judges")
+async def list_event_judges(event_id: str):
+    _require_event(event_id)
+    return _load_roster(event_id, "judges")
+
+
+@router.post("/events/{event_id}/judges")
+async def add_event_judge(event_id: str, entry: JudgeEntry):
+    _require_event(event_id)
+    roster = _load_roster(event_id, "judges")
+    if any((j.get("email") or "").lower() == entry.email.lower() for j in roster):
+        raise HTTPException(status_code=409, detail="A judge with this email already exists")
+    roster.append({
+        "id": str(uuid.uuid4()),
+        "name": entry.name,
+        "email": entry.email,
+        "institution": entry.institution or "",
+        "expertise": entry.expertise or [],
+        "rating": 5.0,
+    })
+    _save_roster(event_id, "judges", roster)
+    return roster[-1]
+
+
+@router.post("/events/{event_id}/judges/upload-csv")
+async def upload_event_judges_csv(event_id: str, file: UploadFile = File(...)):
+    _require_event(event_id)
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    rows = parse_judge_csv(content)
+
+    roster = _load_roster(event_id, "judges")
+    seen = {(j.get("email") or "").lower() for j in roster}
+    added = 0
+    for r in rows:
+        email = (r.get("email") or "").lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": r.get("name", ""),
+            "email": r.get("email", ""),
+            "institution": r.get("organization") or "",
+            "expertise": r.get("expertise") or [],
+            "rating": 5.0,
+        })
+        added += 1
+
+    _save_roster(event_id, "judges", roster)
+    return {
+        "message": f"Imported {added} judge(s)"
+        + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
+        "count": added,
+        "total": len(roster),
+        "judges": roster,
+    }
 
 
 @router.post("/save-config")

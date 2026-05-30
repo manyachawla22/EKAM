@@ -20,7 +20,8 @@ from app.schemas.round import (
 
 from app.services.round_service import (
     create_round_service,
-    list_rounds_service
+    list_rounds_service,
+    delete_round_service,
 )
 
 router = APIRouter(
@@ -68,3 +69,20 @@ async def list_rounds(
 ):
     """List all rounds for an event."""
     return await list_rounds_service(db, event_id)
+
+
+@router.delete(
+    "/{event_id}/{round_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def delete_round(
+    event_id: UUID,
+    round_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a round."""
+    await delete_round_service(db, event_id, round_id)

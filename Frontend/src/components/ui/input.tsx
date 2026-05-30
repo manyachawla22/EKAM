@@ -1,20 +1,159 @@
-import * as React from "react"
-import { Input as InputPrimitive } from "@base-ui/react/input"
+"use client";
 
-import { cn } from "@/lib/utils"
+import { type InputHTMLAttributes, forwardRef } from "react";
 
-function Input({ className, type, ...props }: React.ComponentProps<"input">) {
-  return (
-    <InputPrimitive
-      type={type}
-      data-slot="input"
-      className={cn(
-        "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none file:inline-flex file:h-6 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
-        className
-      )}
-      {...props}
-    />
-  )
+const wrapperStyle = (fullWidth: boolean): React.CSSProperties => ({
+  display: "flex",
+  flexDirection: "column",
+  gap: "0.375rem",
+  width: fullWidth ? "100%" : "auto",
+});
+
+const labelStyle: React.CSSProperties = {
+  fontSize: "0.875rem",
+  fontWeight: 500,
+  color: "rgba(255,255,255,0.8)",
+};
+
+const fieldBaseStyle = (
+  fullWidth: boolean,
+  error: boolean
+): React.CSSProperties => ({
+  width: fullWidth ? "100%" : undefined,
+  borderRadius: "0.5rem",
+  border: `1px solid ${error ? "rgba(239,68,68,0.6)" : "#222"}`,
+  background: "#0d0d0d",
+  padding: "0.625rem 1rem",
+  fontSize: "0.875rem",
+  color: "#fff",
+  outline: "none",
+  transition: "all 0.2s",
+  fontFamily: "inherit",
+  boxSizing: "border-box",
+});
+
+const hintStyle = (isError: boolean): React.CSSProperties => ({
+  fontSize: "0.75rem",
+  color: isError ? "#f87171" : "rgba(255,255,255,0.4)",
+  margin: 0,
+});
+
+interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
+  label?: string;
+  error?: string;
+  hint?: string;
+  fullWidth?: boolean;
 }
 
-export { Input }
+const Input = forwardRef<HTMLInputElement, InputProps>(
+  ({ label, error, hint, fullWidth = false, style, id, ...props }, ref) => {
+    const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
+
+    return (
+      <div style={wrapperStyle(fullWidth)}>
+        {label && (
+          <label htmlFor={inputId} style={labelStyle}>
+            {label}
+          </label>
+        )}
+        <input
+          ref={ref}
+          id={inputId}
+          style={{ ...fieldBaseStyle(fullWidth, !!error), ...style }}
+          {...props}
+        />
+        {error && <p style={hintStyle(true)}>{error}</p>}
+        {hint && !error && <p style={hintStyle(false)}>{hint}</p>}
+      </div>
+    );
+  }
+);
+
+Input.displayName = "Input";
+
+export default Input;
+
+// ─── Textarea ─────────────────────────────────────────────────────────────────
+interface TextareaProps
+  extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  label?: string;
+  error?: string;
+  hint?: string;
+  fullWidth?: boolean;
+}
+
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
+  ({ label, error, hint, fullWidth = false, style, id, ...props }, ref) => {
+    const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
+
+    return (
+      <div style={wrapperStyle(fullWidth)}>
+        {label && (
+          <label htmlFor={inputId} style={labelStyle}>
+            {label}
+          </label>
+        )}
+        <textarea
+          ref={ref}
+          id={inputId}
+          style={{
+            ...fieldBaseStyle(fullWidth, !!error),
+            resize: "vertical",
+            minHeight: "100px",
+            ...style,
+          }}
+          {...props}
+        />
+        {error && <p style={hintStyle(true)}>{error}</p>}
+        {hint && !error && <p style={hintStyle(false)}>{hint}</p>}
+      </div>
+    );
+  }
+);
+
+Textarea.displayName = "Textarea";
+
+// ─── Select ───────────────────────────────────────────────────────────────────
+interface SelectProps
+  extends React.SelectHTMLAttributes<HTMLSelectElement> {
+  label?: string;
+  error?: string;
+  hint?: string;
+  fullWidth?: boolean;
+  options: { value: string; label: string }[];
+}
+
+export const Select = forwardRef<HTMLSelectElement, SelectProps>(
+  (
+    { label, error, hint, fullWidth = false, style, id, options, ...props },
+    ref
+  ) => {
+    const inputId = id || label?.toLowerCase().replace(/\s+/g, "-");
+
+    return (
+      <div style={wrapperStyle(fullWidth)}>
+        {label && (
+          <label htmlFor={inputId} style={labelStyle}>
+            {label}
+          </label>
+        )}
+        <select
+          ref={ref}
+          id={inputId}
+          style={{ ...fieldBaseStyle(fullWidth, !!error), ...style }}
+          {...props}
+        >
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value} style={{ background: "#111" }}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        {error && <p style={hintStyle(true)}>{error}</p>}
+        {hint && !error && <p style={hintStyle(false)}>{hint}</p>}
+      </div>
+    );
+  }
+);
+
+Select.displayName = "Select";

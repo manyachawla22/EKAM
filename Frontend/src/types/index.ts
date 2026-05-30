@@ -1,0 +1,337 @@
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+export type UserRole = "organizer" | "participant" | "judge" | "admin";
+
+export type EventStatus = "draft" | "active" | "completed" | "cancelled" | "archived";
+
+export type EventStage =
+  | "registration"
+  | "team_formation"
+  | "submission"
+  | "evaluation"
+  | "results"
+  | "completed";
+
+export type RoundStatus = "upcoming" | "active" | "completed";
+
+export type SubmissionStatus = "submitted" | "evaluated" | "pending" | "reviewed";
+
+export type ReportType = "summary" | "detailed" | "scores" | "participants";
+
+// ─── Core Models ─────────────────────────────────────────────────────────────
+
+export interface User {
+  id: string;
+  firebase_uid: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  organization?: string;
+  is_active: boolean;
+}
+
+export interface Event {
+  id: string;
+  name: string;
+  type: string;
+  description: string;
+  status: EventStatus;
+  stage: EventStage;
+  max_participants: number;
+  hash: string;
+  organizer_id: string;
+  min_team_size?: number;
+  max_team_size?: number;
+  team_formation_type?: string;
+  created_at?: string;
+  updated_at?: string;
+  participant_count?: number;
+  team_count?: number;
+  submission_count?: number;
+}
+
+export interface Round {
+  id: string;
+  event_id: string;
+  name: string;
+  description?: string;
+  status: RoundStatus;
+  start_date?: string;
+  end_date?: string;
+  created_at?: string;
+}
+
+export interface Participant {
+  id: string;
+  event_id: string;
+  name: string;
+  email: string;
+  institution?: string;
+  skills?: string[];
+  gender?: string;
+  age?: number;
+  phone?: string;
+  is_verified?: boolean;
+  created_at?: string;
+}
+
+export interface TeamMember {
+  id: string;
+  team_id: string;
+  participant_id: string;
+  is_leader: boolean;
+  joined_at?: string;
+  participant?: Participant;
+  user?: User;
+}
+
+export interface Team {
+  id: string;
+  event_id: string;
+  name: string;
+  theme_id?: string;
+  members?: TeamMember[];
+  created_at?: string;
+}
+
+export interface JudgeAssignment {
+  id: string;
+  judge_id: string;
+  event_id?: string;
+  team_id?: string;
+  round_id?: string;
+  assigned_at?: string;
+  judge?: User;
+  event?: Event;
+  round?: Round;
+}
+
+export interface Judge {
+  id: string;
+  event_id: string;
+  name: string;
+  email: string;
+  institution?: string;
+  expertise?: string[];
+  rating?: number;
+  is_verified?: boolean;
+  created_at?: string;
+}
+
+export interface Submission {
+  id: string;
+  team_id: string;
+  round_id: string;
+  attachments: string[];
+  status: SubmissionStatus;
+  submitted_at?: string;
+  team?: Team;
+  round?: Round;
+  score?: number;
+  final_score?: number;
+  panel_average?: number;
+  evaluations?: Evaluation[];
+}
+
+export interface Evaluation {
+  id: string;
+  submission_id: string;
+  judge_id: string;
+  // Backend returns total_score. `score` is kept as a legacy fallback only.
+  total_score?: number;
+  score?: number;
+  rubric_scores?: Record<string, number>;
+  feedback?: string;
+  evaluated_at?: string;
+  judge?: User;
+}
+
+export interface Report {
+  id: string;
+  event_id: string;
+  title: string;
+  type: ReportType;
+  data?: Record<string, unknown>;
+  generated_at?: string;
+  created_at?: string;
+}
+
+// ─── AI Types ─────────────────────────────────────────────────────────────────
+
+export interface AIChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AIChatResponse {
+  message: string;
+  event_config: EventConfig | null;
+  is_complete: boolean;
+  event_id?: string;
+}
+
+export interface EventConfig {
+  name?: string;
+  type?: string;
+  description?: string;
+  max_participants?: number;
+  team_size?: number;
+  rounds?: Array<{
+    name: string;
+    duration?: string;
+  }>;
+  judging_criteria?: string[];
+  prizes?: string[];
+  [key: string]: unknown;
+}
+
+export interface AIDeployResponse {
+  success: boolean;
+  event_id?: string;
+  hash?: string;
+  file_path?: string;
+}
+
+// ─── API Request Bodies ────────────────────────────────────────────────────────
+
+export interface LoginBody {
+  name?: string;
+  role?: UserRole;
+}
+
+export interface CreateEventBody {
+  name: string;
+  type: string;
+  description: string;
+  status?: EventStatus;
+  stage?: EventStage;
+  max_participants: number;
+  hash: string;
+  // PR #7 made organizer_id required on the backend schema. We populate it
+  // from the signed-in user's profile.id.
+  organizer_id: string;
+  min_team_size?: number;
+  max_team_size?: number;
+  team_formation_type: "platform_generated" | "preformed";
+}
+
+export interface UpdateEventBody {
+  name?: string;
+  type?: string;
+  description?: string;
+  status?: EventStatus;
+  stage?: EventStage;
+  max_participants?: number;
+}
+
+export interface CreateRoundBody {
+  event_id: string;
+  name: string;
+  description?: string;
+  status?: RoundStatus;
+  start_date?: string;
+  end_date?: string;
+}
+
+export interface RegisterParticipantBody {
+  name: string;
+  email: string;
+  event_id: string;
+  institution?: string;
+  skills?: string[];
+  gender?: string;
+  age?: number;
+  phone?: string;
+}
+
+export interface CreateTeamBody {
+  event_id: string;
+  name: string;
+  theme_id?: string;
+}
+
+export interface AssignTeamMemberBody {
+  team_id: string;
+  participant_id: string;
+  is_leader: boolean;
+}
+
+export interface UploadSubmissionBody {
+  team_id: string;
+  round_id: string;
+  attachments: string[];
+}
+
+export interface SubmitEvaluationBody {
+  submission_id: string;
+  judge_id: string;
+  // Backend EvaluationCreate requires `total_score` (0-100) and
+  // `rubric_scores` (Dict[str, float]). The frontend currently uses a
+  // single overall score so we surface that as both `total_score` and a
+  // one-key rubric. When the rubric-schema endpoint exists, switch this
+  // to a per-criterion form.
+  total_score: number;
+  rubric_scores: Record<string, number>;
+  feedback?: string;
+}
+
+export interface AssignJudgeBody {
+  judge_id: string;
+  team_id?: string;
+  event_id?: string;
+  round_id?: string;
+}
+
+export interface InviteJudgeBody {
+  email: string;
+  event_id: string;
+  name?: string;
+  institution?: string;
+  expertise?: string[];
+}
+
+export interface GenerateReportBody {
+  event_id: string;
+  title: string;
+  type: ReportType;
+  data?: Record<string, unknown>;
+}
+
+export interface AutoFormTeamsResponse {
+  success: boolean;
+  teams: Team[];
+  leftovers: Participant[];
+  message: string;
+}
+
+// ─── Approvals ────────────────────────────────────────────────────────────────
+
+export type ApprovalStatus = "draft" | "pending" | "approved" | "rejected" | "revised";
+
+export type ApprovalRequestType =
+  | "team_formation"
+  | "judge_assignment"
+  | "email_batch"
+  | "leaderboard_publish"
+  | "stage_transition"
+  | "progression";
+
+export interface Approval {
+  id: string;
+  event_id: string;
+  request_type: ApprovalRequestType;
+  payload: Record<string, unknown>;
+  status: ApprovalStatus;
+  requested_by?: string;
+  reviewed_by?: string;
+  review_notes?: string;
+  requested_at: string;
+  reviewed_at?: string;
+}
+
+// ─── API Response Wrappers ────────────────────────────────────────────────────
+
+export interface ApiError {
+  detail: string;
+  status?: number;
+}

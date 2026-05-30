@@ -20,6 +20,9 @@ class RoundBase(BaseModel):
 
 class RoundCreate(RoundBase):
     event_id: UUID
+    status: Optional[RoundStatus] = RoundStatus.upcoming
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
 
 
 class RoundResponse(RoundBase):
@@ -69,6 +72,7 @@ class EventUpdate(BaseModel):
 
 class EventResponse(EventBase):
     id: UUID
+    hash: str
     organizer_id: UUID
 
     status: EventStatus

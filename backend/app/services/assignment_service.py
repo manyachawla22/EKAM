@@ -13,6 +13,7 @@ from sqlalchemy.future import select
 from app.models.participant import Participant
 from app.models.judge import Judge, JudgeAssignment
 from app.models.team import Team, TeamMember
+from app.models.event import Round, Event
 from app.models.approval import RequestType
 
 from app.services.cpsat_team_service import generate_teams
@@ -126,6 +127,37 @@ async def execute_team_formation(
         await db.rollback()
         raise
 
+    # Auto-draft login emails for all participants in the formed teams.
+    # We read IDs from teams_dict (already in memory) because team.members is
+    # an unloaded async relationship after db.commit() and would always be empty.
+    try:
+        event_result = await db.execute(select(Event).where(Event.id == event_id))
+        event_obj = event_result.scalars().first()
+        if event_obj:
+            participant_ids = [
+                member_data["id"]
+                for members in teams_dict.values()
+                for member_data in members
+            ]
+            if participant_ids:
+                p_result = await db.execute(
+                    select(Participant).where(Participant.id.in_(participant_ids))
+                )
+                p_emails = [p.email for p in p_result.scalars().all() if p.email]
+                if p_emails:
+                    from app.services.email_service import draft_participant_login_emails
+                    requested_by = payload.get("requested_by", str(event_obj.organizer_id))
+                    await draft_participant_login_emails(
+                        db=db,
+                        event_id=event_id,
+                        event_name=event_obj.name,
+                        event_hash=event_obj.hash,
+                        participant_emails=p_emails,
+                        requested_by=requested_by,
+                    )
+    except Exception as e:
+        print(f"[assignment_service] Auto email draft failed (non-fatal): {e}")
+
     return created_teams
 
 
@@ -137,7 +169,7 @@ async def propose_judge_assignment(
     db: AsyncSession,
     event_id: str,
     requested_by: str,
-    round_id: str,
+    round_id: str | None = None,
     judges_per_team: int = 2,
     max_teams_per_judge: int = 5,
 ):
@@ -146,6 +178,18 @@ async def propose_judge_assignment(
     2. Run pure CP-SAT optimizer.
     3. Create an ApprovalRequest.
     """
+    # Auto-detect first round for the event when caller doesn't specify one
+    if not round_id:
+        rounds_result = await db.execute(
+            select(Round).where(Round.event_id == event_id).limit(1)
+        )
+        round_obj = rounds_result.scalars().first()
+        if not round_obj:
+            raise ValueError(
+                "No rounds exist for this event. Create at least one round before assigning judges."
+            )
+        round_id = str(round_obj.id)
+
     judges_result = await db.execute(
         select(Judge).where(Judge.event_id == event_id)
     )
@@ -159,6 +203,15 @@ async def propose_judge_assignment(
 
     if not judges_db or not teams_db:
         raise ValueError("Not enough judges or teams to run assignment")
+
+    # Gate: all teams must have selected a theme before judges can be assigned.
+    teams_without_theme = [t.name for t in teams_db if not t.theme_id]
+    if teams_without_theme:
+        names = ", ".join(teams_without_theme)
+        raise ValueError(
+            f"The following team(s) have not selected a theme yet: {names}. "
+            f"All teams must select a theme before judge assignment can proceed."
+        )
 
     # Judge model uses `institution`, not `organization`
     judge_dicts = [
@@ -236,6 +289,30 @@ async def execute_judge_assignment(
     except Exception:
         await db.rollback()
         raise
+
+    # Auto-draft login emails for all assigned judges
+    try:
+        event_result = await db.execute(select(Event).where(Event.id == payload.get("event_id")))
+        event_obj = event_result.scalars().first()
+        if event_obj and assignments_data:
+            judge_ids = [data["judge_id"] for data in assignments_data]
+            j_result = await db.execute(
+                select(Judge).where(Judge.id.in_(judge_ids))
+            )
+            j_emails = list({j.email for j in j_result.scalars().all() if j.email})
+            if j_emails:
+                from app.services.email_service import draft_judge_login_emails
+                requested_by = payload.get("requested_by", str(event_obj.organizer_id))
+                await draft_judge_login_emails(
+                    db=db,
+                    event_id=str(event_obj.id),
+                    event_name=event_obj.name,
+                    event_hash=event_obj.hash,
+                    judge_emails=j_emails,
+                    requested_by=requested_by,
+                )
+    except Exception as e:
+        print(f"[assignment_service] Auto judge email draft failed (non-fatal): {e}")
 
     return created
 

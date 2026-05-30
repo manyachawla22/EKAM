@@ -28,6 +28,8 @@ class TeamResponse(TeamBase):
 
     created_at: datetime
 
+    members: List["TeamMemberResponse"] = []
+
     class Config:
         from_attributes = True
 
@@ -55,3 +57,6 @@ class TeamMemberResponse(BaseModel):
 
 Team = TeamResponse
 TeamMember = TeamMemberResponse
+
+# Resolve forward reference — TeamResponse.members uses TeamMemberResponse
+TeamResponse.model_rebuild()

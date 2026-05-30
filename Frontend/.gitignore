@@ -9,6 +9,7 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+.claude
 
 # testing
 /coverage
@@ -39,3 +40,138 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+
+# Firebase credentials (CRITICAL - never commit)
+*.json
+*firebase-adminsdk*.json
+*service-account*.json
+
+# Backend (Python)
+__pycache__/
+*.pyc
+venv/
+env/
+.venv/
+backend/venv/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+backend/requirements.txt
+
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+backend/venv/
+backend/__pycache__/
+backend/app/__pycache__/
+backend/app/core/__pycache__/
+backend/app/middleware/__pycache__/
+backend/app/models/__pycache__/
+backend/app/routers/__pycache__/
+backend/app/schemas/__pycache__/
+backend/app/services/__pycache__/
+backend/app/team_formation/__pycache__/
+backend/app/utils/__pycache__/
+backend/alembic/__pycache__/
+backend/alembic/versions/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment files
+.env
+.env.backend
+.env.frontend
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+backend/.env.*
+frontend/.env.*
+
+# Firebase credentials (CRITICAL)
+*.json
+*firebase-adminsdk*.json
+*service-account*.json
+ekam-aaa95-firebase-adminsdk-*.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+postgres-data/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Backend config compiled
+config.python-*.pyc
+database.python-*.pyc
+security.python-*.pyc
+
+# Alembic (keep structure, ignore cache)
+alembic/__pycache__/
+
+# Uploads & temp files
+uploads/
+temp/
+*.tmp
+*.bak
+
+# Certificates & reports
+*.pdf
+*.cert
+certificates/
+reports/
+
+# Keep example files
+!.env.example
+!*.example.json
+
+#extras
+implementation_plan.md
+task.md
+verification_report.md
+task2.md
+ACTION_PLAN.md
+final_work.md
+implementation_plan_2.md
+project_overview.md

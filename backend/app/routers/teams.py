@@ -62,8 +62,12 @@ async def auto_form_teams(
             "message": "CP-SAT team formation proposed.",
             "approval_id": str(approval.id)
         }
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Team formation failed: {type(e).__name__}: {e}")
 
 
 @router.post(
@@ -122,6 +126,28 @@ async def get_team(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     return team
+
+
+@router.delete(
+    "/{event_id}/{team_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def delete_team(
+    event_id: UUID,
+    team_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a team and its members."""
+    result = await db.execute(select(TeamModel).where(TeamModel.id == team_id))
+    team = result.scalars().first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    await db.delete(team)
+    await db.commit()
 
 
 @router.put(

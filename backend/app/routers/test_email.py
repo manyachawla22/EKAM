@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.services.email_service import _send_via_smtp
+from app.services.email_service import _send_via_resend
 
 router = APIRouter(prefix="/test", tags=["Test"])
 
@@ -11,10 +11,10 @@ async def test_email():
     Returns success=true if SMTP delivery succeeded, plus an error message if not.
     """
     try:
-        await _send_via_smtp(
+        await _send_via_resend(
             recipient="nehac6123@gmail.com",
             subject="EKAM Test Email",
-            body="Testing SMTP from EKAM. If you received this, Brevo delivery is working.",
+            body="Testing SMTP from EKAM. If you received this, delivery is working.",
             email_type="test",
         )
         return {"success": True, "message": "Email sent successfully"}

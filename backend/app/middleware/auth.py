@@ -182,7 +182,6 @@ def require_event_access(event_id_param: str = "event_id"):
 
     async def checker(
         auth: AuthContext = Depends(get_current_actor),
-        **kwargs,
     ) -> AuthContext:
         # Admins and organizers can access any event
         if auth.actor_type in ("admin", "organizer"):

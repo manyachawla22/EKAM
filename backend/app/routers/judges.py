@@ -122,8 +122,12 @@ async def auto_assign_judges(
             "message": "CP-SAT assignment proposed.",
             "approval_id": str(approval.id)
         }
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Judge assignment failed: {type(e).__name__}: {e}")
 
 
 @router.post(
@@ -158,6 +162,33 @@ async def list_judges(
 ):
     """List all judges for an event."""
     return await list_judges_service(db, event_id)
+
+
+@router.delete(
+    "/{event_id}/{judge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def delete_judge(
+    event_id: UUID,
+    judge_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Remove a judge from the event."""
+    result = await db.execute(
+        select(JudgeModel).where(
+            JudgeModel.id == judge_id,
+            JudgeModel.event_id == event_id
+        )
+    )
+    judge = result.scalars().first()
+    if not judge:
+        raise HTTPException(status_code=404, detail="Judge not found")
+    await db.delete(judge)
+    await db.commit()
 
 
 @router.get(
