@@ -15,6 +15,8 @@ import {
   Layers,
   UserCheck,
   Menu,
+  ShieldCheck,
+  AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 
@@ -40,6 +42,8 @@ function getNavItems(role: string | null, eventId?: string): NavItem[] {
         { label: "Teams", href: `/organizer/events/${eventId}/teams`, icon: <Trophy size={16} /> },
         { label: "Judges", href: `/organizer/events/${eventId}/judges`, icon: <UserCheck size={16} /> },
         { label: "Submissions", href: `/organizer/events/${eventId}/submissions`, icon: <Send size={16} /> },
+        { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} /> },
+        { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} /> },
         { label: "Reports", href: `/organizer/events/${eventId}/reports`, icon: <BarChart2 size={16} /> }
       );
     }

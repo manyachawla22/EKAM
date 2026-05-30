@@ -10,6 +10,7 @@ import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { getRoleDashboard } from "@/lib/api";
 import { toast } from "sonner";
+import NotificationsBell from "@/components/layout/NotificationsBell";
 
 const roleBadgeVariant = {
   organizer: "warning" as const,
@@ -65,6 +66,9 @@ export default function Navbar() {
                   {profile.role}
                 </Badge>
               </div>
+
+              {/* Notifications */}
+              <NotificationsBell />
 
               {/* Dashboard link */}
               <Link href={getRoleDashboard(profile.role)}>

@@ -192,6 +192,75 @@ export interface AIDeployResponse {
   file_path?: string;
 }
 
+// ─── Approvals ────────────────────────────────────────────────────────────────
+
+export type ApprovalRequestType =
+  | "team_formation"
+  | "judge_assignment"
+  | "email_batch"
+  | "leaderboard_publish"
+  | "stage_transition"
+  | "progression";
+
+export type ApprovalStatus =
+  | "draft"
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "revised";
+
+export interface ApprovalRequest {
+  id: string;
+  event_id: string;
+  request_type: ApprovalRequestType;
+  status: ApprovalStatus;
+  // Free-form proposal payload (shape depends on request_type).
+  payload: Record<string, unknown>;
+  requested_by?: string | null;
+  reviewed_by?: string | null;
+  review_notes?: string | null;
+  requested_at: string;
+  reviewed_at?: string | null;
+}
+
+export interface ApprovalActionBody {
+  action: ApprovalStatus; // approve | reject | revise (matches enum)
+  review_notes?: string;
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+export type NotificationType = "info" | "alert" | "action_required";
+
+export interface Notification {
+  id: string;
+  event_id: string;
+  user_id: string;
+  title: string;
+  message: string;
+  type: NotificationType;
+  is_read: boolean;
+  action_link?: string | null;
+  created_at: string;
+}
+
+// ─── Anomalies ────────────────────────────────────────────────────────────────
+
+export type AnomalyType = "score_variance" | "bias_detected" | "time_anomaly";
+
+export interface Anomaly {
+  id: string;
+  event_id: string;
+  evaluation_id: string;
+  anomaly_type: AnomalyType;
+  severity: number; // 0.0 - 1.0
+  description: string;
+  is_resolved: boolean;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  created_at: string;
+}
+
 // ─── API Request Bodies ────────────────────────────────────────────────────────
 
 export interface LoginBody {

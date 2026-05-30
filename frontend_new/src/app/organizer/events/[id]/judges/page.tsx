@@ -12,12 +12,14 @@ import {
   inviteJudge,
   listRounds,
   autoAssignJudges,
+  uploadJudgesCsv,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Judge, Round } from "@/types";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
+import CsvUploadButton from "@/components/ui/CsvUploadButton";
 
 const inputBase: React.CSSProperties = {
   width: "100%",
@@ -149,9 +151,21 @@ export default function JudgesPage() {
             {judges.length} judge{judges.length !== 1 ? "s" : ""} assigned
           </p>
         </div>
-        <Button variant="primary" onClick={() => setInviteModalOpen(true)}>
-          <Plus size={16} /> Invite Judge
-        </Button>
+        <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+          <CsvUploadButton
+            label="Bulk Import CSV"
+            disabled={!id}
+            onUpload={(file) => uploadJudgesCsv(id, file)}
+            onUploaded={async () => {
+              if (!id) return;
+              const updated = await listJudges(id).catch(() => []);
+              setJudges(updated);
+            }}
+          />
+          <Button variant="primary" onClick={() => setInviteModalOpen(true)}>
+            <Plus size={16} /> Invite Judge
+          </Button>
+        </div>
       </div>
 
       {rounds.length > 0 && (

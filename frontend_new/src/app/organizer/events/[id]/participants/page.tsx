@@ -2,14 +2,15 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Users, Search } from "lucide-react";
 import { toast } from "sonner";
-import { listParticipants } from "@/lib/api";
+import { listParticipants, uploadParticipantsCsv } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Participant } from "@/types";
+import CsvUploadButton from "@/components/ui/CsvUploadButton";
 
 export default function ParticipantsPage() {
   const { id } = useParams<{ id: string }>();
@@ -19,19 +20,23 @@ export default function ParticipantsPage() {
   const [search, setSearch] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
 
+  const fetchParticipants = useCallback(() => {
+    if (!id) return;
+    return listParticipants(id)
+      .then(setParticipants)
+      .catch((err: Error) =>
+        toast.error(err.message || "Failed to load participants")
+      );
+  }, [id]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user || !id) {
       setLoading(false);
       return;
     }
-    listParticipants(id)
-      .then(setParticipants)
-      .catch((err: Error) =>
-        toast.error(err.message || "Failed to load participants")
-      )
-      .finally(() => setLoading(false));
-  }, [id, authLoading, user]);
+    fetchParticipants()?.finally(() => setLoading(false));
+  }, [id, authLoading, user, fetchParticipants]);
 
   const filtered = participants.filter((p) => {
     const q = search.toLowerCase();
@@ -76,6 +81,12 @@ export default function ParticipantsPage() {
             {participants.length} registered
           </p>
         </div>
+        <CsvUploadButton
+          label="Bulk Import CSV"
+          disabled={!id}
+          onUpload={(file) => uploadParticipantsCsv(id, file)}
+          onUploaded={fetchParticipants}
+        />
       </div>
 
       <div

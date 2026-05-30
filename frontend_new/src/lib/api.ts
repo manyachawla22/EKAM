@@ -8,6 +8,10 @@ import type {
   TeamMember,
   Judge,
   JudgeAssignment,
+  ApprovalRequest,
+  ApprovalActionBody,
+  Notification,
+  Anomaly,
   Submission,
   Evaluation,
   Report,
@@ -424,6 +428,122 @@ export async function listAIEvents(): Promise<Event[]> {
 
 export async function getAIEvent(hash: string): Promise<EventConfig> {
   return apiFetch<EventConfig>(`/ai/events/${hash}`);
+}
+
+// ─── APPROVALS ────────────────────────────────────────────────────────────────
+
+export async function listPendingApprovals(
+  eventId: string
+): Promise<ApprovalRequest[]> {
+  return apiFetch<ApprovalRequest[]>(`/approvals/${eventId}`);
+}
+
+export async function listApprovalHistory(
+  eventId: string
+): Promise<ApprovalRequest[]> {
+  return apiFetch<ApprovalRequest[]>(`/approvals/${eventId}/history`);
+}
+
+export async function getApproval(
+  eventId: string,
+  approvalId: string
+): Promise<ApprovalRequest> {
+  return apiFetch<ApprovalRequest>(`/approvals/${eventId}/${approvalId}`);
+}
+
+export async function reviewApproval(
+  eventId: string,
+  approvalId: string,
+  body: ApprovalActionBody
+): Promise<ApprovalRequest> {
+  return apiFetch<ApprovalRequest>(
+    `/approvals/${eventId}/${approvalId}/review`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+// ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
+
+export async function listMyNotifications(
+  unreadOnly: boolean = false
+): Promise<Notification[]> {
+  return apiFetch<Notification[]>(
+    `/notifications${unreadOnly ? "?unread_only=true" : ""}`
+  );
+}
+
+export async function markNotificationRead(
+  notificationId: string
+): Promise<{ message?: string }> {
+  return apiFetch<{ message?: string }>(
+    `/notifications/${notificationId}/read`,
+    { method: "POST" }
+  );
+}
+
+// ─── ANOMALIES ────────────────────────────────────────────────────────────────
+
+export async function listAnomalies(eventId: string): Promise<Anomaly[]> {
+  return apiFetch<Anomaly[]>(`/anomalies/${eventId}`);
+}
+
+export async function resolveAnomaly(
+  eventId: string,
+  anomalyId: string
+): Promise<{ message: string }> {
+  return apiFetch<{ message: string }>(
+    `/anomalies/${eventId}/${anomalyId}/resolve`,
+    { method: "POST" }
+  );
+}
+
+// ─── BULK CSV IMPORT ──────────────────────────────────────────────────────────
+
+async function uploadCsv<T>(path: string, file: File): Promise<T> {
+  // The auth header needs to come from getAuthHeaders, but we must NOT set
+  // Content-Type — the browser sets the multipart boundary itself.
+  const headers = await getAuthHeaders();
+  const cleaned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers as Record<string, string>)) {
+    if (k.toLowerCase() !== "content-type") cleaned[k] = v;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: cleaned,
+    body: form,
+  });
+  if (!response.ok) {
+    let msg = `Upload failed: ${response.status}`;
+    try {
+      const errData = (await response.json()) as { detail?: unknown };
+      const d = errData.detail;
+      if (typeof d === "string") msg = d;
+      else if (d) msg = JSON.stringify(d);
+    } catch {
+      // body wasn't JSON
+    }
+    throw new Error(msg);
+  }
+  return response.json() as Promise<T>;
+}
+
+export async function uploadParticipantsCsv(
+  eventId: string,
+  file: File
+): Promise<{ message: string; count: number }> {
+  return uploadCsv(`/participants/${eventId}/upload-csv`, file);
+}
+
+export async function uploadJudgesCsv(
+  eventId: string,
+  file: File
+): Promise<{ message: string; count: number }> {
+  return uploadCsv(`/judges/${eventId}/upload-csv`, file);
 }
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
