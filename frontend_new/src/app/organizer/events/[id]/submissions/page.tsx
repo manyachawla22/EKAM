@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Send, ExternalLink } from "lucide-react";
+import TeamDetailModal from "@/components/ui/TeamDetailModal";
 import { toast } from "sonner";
 import { listRounds, listSubmissions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -28,6 +29,7 @@ export default function SubmissionsPage() {
   const { user, loading: authLoading } = useAuth();
   const [submissions, setSubmissions] = useState<SubmissionWithRound[]>([]);
   const [loading, setLoading] = useState(true);
+  const [teamModal, setTeamModal] = useState<{ teamId: string; teamName: string } | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -165,18 +167,24 @@ export default function SubmissionsPage() {
                 padding: "0.875rem 1.25rem",
               }}
             >
-              <span
+              <button
+                onClick={() => setTeamModal({
+                  teamId: s.team_id,
+                  teamName: s.team?.name || `Team ${String(s.team_id).slice(0, 8)}`,
+                })}
                 style={{
-                  fontSize: "0.875rem",
-                  fontWeight: 500,
-                  color: "#fff",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
+                  background: "transparent", border: "none", cursor: "pointer",
+                  padding: 0, textAlign: "left",
+                  fontSize: "0.875rem", fontWeight: 500, color: "#fff",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  textDecoration: "underline", textDecorationColor: "rgba(255,255,255,0.15)",
+                  textUnderlineOffset: "3px", transition: "color 0.15s",
                 }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#e8503a")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "#fff")}
               >
                 {s.team?.name || `Team ${String(s.team_id).slice(0, 8)}`}
-              </span>
+              </button>
               <span
                 style={{
                   fontSize: "0.875rem",
@@ -244,6 +252,16 @@ export default function SubmissionsPage() {
             </motion.div>
           ))}
         </div>
+      )}
+
+      {teamModal && id && (
+        <TeamDetailModal
+          open={!!teamModal}
+          onClose={() => setTeamModal(null)}
+          eventId={id}
+          teamId={teamModal.teamId}
+          teamName={teamModal.teamName}
+        />
       )}
     </div>
   );

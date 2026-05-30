@@ -14,7 +14,7 @@ import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Navbar from "@/components/layout/Navbar";
 
 export default function ParticipantEventsPage() {
-  const { user, loading: authLoading } = useAuth();
+  const { profile, loading: authLoading } = useAuth();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -22,7 +22,7 @@ export default function ParticipantEventsPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!profile) {
       setLoading(false);
       return;
     }
@@ -32,7 +32,7 @@ export default function ParticipantEventsPage() {
         toast.error(err.message || "Failed to load events")
       )
       .finally(() => setLoading(false));
-  }, [authLoading, user]);
+  }, [authLoading, profile]);
 
   const filtered = events.filter(
     (e) =>

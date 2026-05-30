@@ -5,9 +5,9 @@ export const dynamic = "force-dynamic";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Users, Search } from "lucide-react";
+import { Users, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { listParticipants, uploadParticipantsCsv } from "@/lib/api";
+import { listParticipants, deleteParticipant, uploadParticipantsCsv } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Participant } from "@/types";
 import CsvUploadButton from "@/components/ui/CsvUploadButton";
@@ -19,6 +19,17 @@ export default function ParticipantsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [searchFocus, setSearchFocus] = useState(false);
+
+  const handleDelete = async (participantId: string) => {
+    if (!id || !window.confirm("Remove this participant from the event?")) return;
+    try {
+      await deleteParticipant(id, participantId);
+      setParticipants((prev) => prev.filter((p) => p.id !== participantId));
+      toast.success("Participant removed");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove participant");
+    }
+  };
 
   const fetchParticipants = useCallback(() => {
     if (!id) return;
@@ -183,7 +194,7 @@ export default function ParticipantsPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
               gap: "1rem",
               borderBottom: "1px solid #222",
               padding: "0.75rem 1.25rem",
@@ -198,6 +209,7 @@ export default function ParticipantsPage() {
             <span>Institution</span>
             <span>Skills</span>
             <span>Joined</span>
+            <span />
           </div>
           {filtered.map((p, i) => (
             <motion.div
@@ -207,7 +219,7 @@ export default function ParticipantsPage() {
               transition={{ delay: i * 0.03 }}
               style={{
                 display: "grid",
-                gridTemplateColumns: "2fr 1fr 1fr 1fr",
+                gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
                 gap: "1rem",
                 alignItems: "center",
                 borderBottom: i === filtered.length - 1 ? "none" : "1px solid rgba(34,34,34,0.5)",
@@ -274,6 +286,20 @@ export default function ParticipantsPage() {
                   ? new Date(p.created_at).toLocaleDateString()
                   : "—"}
               </span>
+              <button
+                onClick={() => handleDelete(p.id)}
+                title="Remove participant"
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: "transparent", border: "none", cursor: "pointer",
+                  color: "rgba(255,255,255,0.2)", padding: "0.25rem",
+                  borderRadius: "0.375rem", transition: "color 0.2s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#f87171")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.2)")}
+              >
+                <Trash2 size={15} />
+              </button>
             </motion.div>
           ))}
         </div>

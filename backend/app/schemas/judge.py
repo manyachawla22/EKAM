@@ -2,6 +2,13 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
+from enum import Enum
+
+
+class InviteStatus(str, Enum):
+    pending = "pending"
+    accepted = "accepted"
+    declined = "declined"
 
 
 # -------------------- JUDGE --------------------
@@ -63,3 +70,35 @@ class JudgeAssignmentResponse(BaseModel):
 
 Judge = JudgeResponse
 JudgeAssignment = JudgeAssignmentResponse
+
+
+# -------------------- JUDGE ASSIGNMENT DETAIL (for judge dashboard) ----------
+
+class JudgeAssignmentDetail(BaseModel):
+    assignment_id: UUID
+    round_id: UUID
+    round_name: str
+    round_status: str
+    team_id: UUID
+    team_name: str
+    submission_id: Optional[UUID] = None
+    submission_status: Optional[str] = None
+    already_evaluated: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+# -------------------- JUDGE INVITE --------------------
+
+class JudgeInviteDetail(BaseModel):
+    judge_name: str
+    judge_email: str
+    event_name: str
+    event_hash: str
+    invite_status: str
+
+
+class JudgeInviteRespond(BaseModel):
+    token: UUID
+    accepted: bool

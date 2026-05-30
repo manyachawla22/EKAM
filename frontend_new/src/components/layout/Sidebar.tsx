@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { motion } from "framer-motion";
 import {
   Calendar,
   Users,
@@ -19,12 +20,14 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { listPendingApprovals, listAnomalies } from "@/lib/api";
 
 interface NavItem {
   label: string;
   href: string;
   icon: React.ReactNode;
   exact?: boolean;
+  glowKey?: "approvals" | "anomalies";
 }
 
 function getNavItems(role: string | null, eventId?: string): NavItem[] {
@@ -42,8 +45,8 @@ function getNavItems(role: string | null, eventId?: string): NavItem[] {
         { label: "Teams", href: `/organizer/events/${eventId}/teams`, icon: <Trophy size={16} /> },
         { label: "Judges", href: `/organizer/events/${eventId}/judges`, icon: <UserCheck size={16} /> },
         { label: "Submissions", href: `/organizer/events/${eventId}/submissions`, icon: <Send size={16} /> },
-        { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} /> },
-        { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} /> },
+        { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} />, glowKey: "approvals" },
+        { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} />, glowKey: "anomalies" },
         { label: "Reports", href: `/organizer/events/${eventId}/reports`, icon: <BarChart2 size={16} /> }
       );
     }
@@ -63,6 +66,7 @@ function extractEventId(pathname: string | null): string | undefined {
 }
 
 const SIDEBAR_WIDTH = "15rem";
+const POLL_MS = 30_000;
 
 interface SidebarProps {
   eventId?: string;
@@ -73,9 +77,10 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
   const pathname = usePathname();
   const eventId = eventIdProp ?? extractEventId(pathname);
 
-  // Hidden by default on mobile (<=767px), open by default on desktop.
-  // Persisted between routes via local storage so closing once stays closed.
   const [open, setOpen] = useState(true);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+  const [unresolvedAnomalies, setUnresolvedAnomalies] = useState(0);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("ekam:sidebar") : null;
@@ -86,20 +91,45 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem("ekam:sidebar", open ? "1" : "0");
-    // Drive the layout's left padding via a CSS variable so <main> shifts
-    // with the sidebar instead of being covered by it.
     document.documentElement.style.setProperty(
       "--ekam-sb-width",
       open ? SIDEBAR_WIDTH : "0"
     );
   }, [open]);
 
-  // Toggle is rendered globally; close on route change for mobile.
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.innerWidth < 768) setOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
+
+  // Poll for pending approvals + unresolved anomalies when inside an event
+  useEffect(() => {
+    if (!eventId) {
+      setPendingApprovals(0);
+      setUnresolvedAnomalies(0);
+      return;
+    }
+
+    const poll = async () => {
+      try {
+        const [approvals, anomalies] = await Promise.all([
+          listPendingApprovals(eventId).catch(() => []),
+          listAnomalies(eventId).catch(() => []),
+        ]);
+        setPendingApprovals(approvals.filter((a) => a.status === "pending").length);
+        setUnresolvedAnomalies(anomalies.filter((a) => !a.is_resolved).length);
+      } catch {
+        // silent
+      }
+    };
+
+    poll();
+    intervalRef.current = setInterval(poll, POLL_MS);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [eventId]);
 
   const navItems = getNavItems(role, eventId);
   if (navItems.length === 0) return null;
@@ -107,9 +137,17 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
   const isActive = (item: NavItem) =>
     item.exact ? pathname === item.href : pathname?.startsWith(item.href);
 
+  const needsGlow = (item: NavItem) => {
+    if (item.glowKey === "approvals") return pendingApprovals > 0;
+    if (item.glowKey === "anomalies") return unresolvedAnomalies > 0;
+    return false;
+  };
+
   const navLink = (item: NavItem) => {
     const active = isActive(item);
-    return (
+    const glow = needsGlow(item);
+
+    const link = (
       <Link
         key={item.href}
         href={item.href}
@@ -122,31 +160,62 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
           fontSize: "0.875rem",
           fontWeight: 500,
           background: active ? "rgba(232,80,58,0.15)" : "transparent",
-          color: active ? "#e8503a" : "rgba(255,255,255,0.65)",
+          color: active ? "#e8503a" : glow ? "#fbbf24" : "rgba(255,255,255,0.65)",
           border: active
             ? "1px solid rgba(232,80,58,0.2)"
             : "1px solid transparent",
           textDecoration: "none",
           transition: "background 0.15s, color 0.15s",
+          position: "relative",
         }}
       >
         <span style={{ flexShrink: 0, display: "flex" }}>{item.icon}</span>
-        <span
-          style={{
-            overflow: "hidden",
-            whiteSpace: "nowrap",
-            textOverflow: "ellipsis",
-          }}
-        >
+        <span style={{ overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
           {item.label}
         </span>
+        {/* Badge showing count */}
+        {glow && !active && (
+          <span style={{
+            marginLeft: "auto",
+            fontSize: "0.65rem",
+            fontWeight: 700,
+            padding: "0.1rem 0.35rem",
+            borderRadius: "9999px",
+            background: "rgba(251,191,36,0.15)",
+            color: "#fbbf24",
+            border: "1px solid rgba(251,191,36,0.25)",
+            lineHeight: 1.4,
+          }}>
+            {item.glowKey === "approvals" ? pendingApprovals : unresolvedAnomalies}
+          </span>
+        )}
       </Link>
+    );
+
+    if (!glow) return <div key={item.href}>{link}</div>;
+
+    // Wrap with a flickering glow animation when action is required
+    return (
+      <motion.div
+        key={item.href}
+        animate={{
+          boxShadow: [
+            "0 0 0px 0px rgba(251,191,36,0)",
+            "0 0 8px 2px rgba(251,191,36,0.45)",
+            "0 0 0px 0px rgba(251,191,36,0)",
+          ],
+        }}
+        transition={{ duration: 0.9, repeat: Infinity, ease: "easeInOut" }}
+        style={{ borderRadius: "0.5rem" }}
+      >
+        {link}
+      </motion.div>
     );
   };
 
   return (
     <>
-      {/* Toggle button — always visible, top-left under the navbar */}
+      {/* Toggle button */}
       <button
         aria-label={open ? "Hide menu" : "Show menu"}
         onClick={() => setOpen((v) => !v)}

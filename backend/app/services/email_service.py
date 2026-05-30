@@ -221,6 +221,38 @@ async def send_otp_email(email: str, otp: str):
         print(f"[email_service] OTP email failed for {email}: {exc}")
 
 
+async def send_judge_invite_email(
+    email: str,
+    judge_name: str,
+    event_name: str,
+    event_hash: str,
+    invite_link: str,
+):
+    """
+    Immediate invite email to a judge with an accept/decline link.
+    No approval queue — the organizer explicitly chose this person.
+    """
+    try:
+        body = (
+            f"Hello {judge_name},\n\n"
+            f"You have been invited to judge \"{event_name}\" on EKAM.\n\n"
+            f"Please click the link below to accept or decline this invitation:\n\n"
+            f"    {invite_link}\n\n"
+            f"If you accept, you will receive your login credentials "
+            f"(Event Hash and OTP instructions) on the same page.\n\n"
+            f"This invitation link is unique to you — please do not share it.\n\n"
+            f"Team EKAM"
+        )
+        await _send_via_resend(
+            recipient=email,
+            subject=f"Judge Invitation — {event_name}",
+            body=body,
+            email_type="judge_invite",
+        )
+    except Exception as exc:
+        print(f"[email_service] Judge invite email failed for {email}: {exc}")
+
+
 async def send_magic_link_email(email: str, link: str):
     """
     Fixed-template magic link email — sends immediately, no approval required.
