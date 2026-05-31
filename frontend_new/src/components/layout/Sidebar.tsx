@@ -18,6 +18,7 @@ import {
   Menu,
   ShieldCheck,
   AlertTriangle,
+  Award,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { listPendingApprovals, listAnomalies } from "@/lib/api";
@@ -30,7 +31,7 @@ interface NavItem {
   glowKey?: "approvals" | "anomalies";
 }
 
-function getNavItems(role: string | null, eventId?: string): NavItem[] {
+function getNavItems(role: string | null, eventId?: string, profile?: { event_id?: string | null }): NavItem[] {
   if (role === "organizer" || role === "admin") {
     const base: NavItem[] = [
       { label: "Events", href: "/organizer/events", icon: <Calendar size={16} /> },
@@ -45,6 +46,7 @@ function getNavItems(role: string | null, eventId?: string): NavItem[] {
         { label: "Teams", href: `/organizer/events/${eventId}/teams`, icon: <Trophy size={16} /> },
         { label: "Judges", href: `/organizer/events/${eventId}/judges`, icon: <UserCheck size={16} /> },
         { label: "Submissions", href: `/organizer/events/${eventId}/submissions`, icon: <Send size={16} /> },
+        { label: "Leaderboard", href: `/organizer/events/${eventId}/leaderboard`, icon: <Award size={16} /> },
         { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} />, glowKey: "approvals" },
         { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} />, glowKey: "anomalies" },
         { label: "Reports", href: `/organizer/events/${eventId}/reports`, icon: <BarChart2 size={16} /> }
@@ -52,10 +54,20 @@ function getNavItems(role: string | null, eventId?: string): NavItem[] {
     }
     return base;
   }
-  if (role === "participant")
+  if (role === "participant") {
+    const scopedEventId = profile?.event_id;
+    if (scopedEventId) {
+      return [{ label: "My Event", href: `/participant/events/${scopedEventId}`, icon: <Calendar size={16} /> }];
+    }
     return [{ label: "Browse Events", href: "/participant/events", icon: <Calendar size={16} /> }];
-  if (role === "judge")
+  }
+  if (role === "judge") {
+    const scopedEventId = profile?.event_id;
+    if (scopedEventId) {
+      return [{ label: "Event Dashboard", href: `/judge/events/${scopedEventId}`, icon: <Star size={16} /> }];
+    }
     return [{ label: "My Assignments", href: "/judge/assignments", icon: <Star size={16} /> }];
+  }
   return [];
 }
 
@@ -73,7 +85,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
-  const { role } = useAuth();
+  const { role, profile } = useAuth();
   const pathname = usePathname();
   const eventId = eventIdProp ?? extractEventId(pathname);
 
@@ -131,7 +143,7 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
     };
   }, [eventId]);
 
-  const navItems = getNavItems(role, eventId);
+  const navItems = getNavItems(role, eventId, profile ?? undefined);
   if (navItems.length === 0) return null;
 
   const isActive = (item: NavItem) =>

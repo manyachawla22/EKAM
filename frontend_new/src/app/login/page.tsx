@@ -135,7 +135,13 @@ export default function LoginPage() {
     try {
       const resp = await verifyOtpAccess(otpEmail, eventHash, otp);
       toast.success("Logged in!");
-      router.push(getRoleDashboard(resp.actor_type as UserRole));
+      if (resp.actor_type === "participant" && resp.event_id) {
+        router.push(`/participant/events/${resp.event_id}`);
+      } else if (resp.actor_type === "judge" && resp.event_id) {
+        router.push(`/judge/events/${resp.event_id}`);
+      } else {
+        router.push(getRoleDashboard(resp.actor_type as UserRole));
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Invalid or expired OTP");
     } finally {

@@ -68,6 +68,7 @@ async def login(
         ip_address = request.client.host if request.client else None
         user_agent = request.headers.get("user-agent")
         display_name = body.name if body else None
+        role = body.role if body else None
 
         return await login_with_profile_service(
             db=db,
@@ -75,6 +76,7 @@ async def login(
             ip_address=ip_address,
             user_agent=user_agent,
             display_name=display_name,
+            role=role,
         )
     except HTTPException:
         raise

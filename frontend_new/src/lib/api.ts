@@ -15,6 +15,11 @@ import type {
   Submission,
   Evaluation,
   Report,
+  Theme,
+  TeamPreference,
+  ParticipantDashboard,
+  JudgeDashboard,
+  OrganizerDashboard,
   AIChatMessage,
   AIChatResponse,
   AIDeployResponse,
@@ -35,7 +40,8 @@ import type {
   UserRole,
 } from "@/types";
 
-export const API_BASE = "http://localhost:8000/api/v1";
+export const API_BASE =
+  (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000") + "/api/v1";
 
 // ─── EKAM JWT storage ────────────────────────────────────────────────────────
 // After /auth/firebase-login the backend returns a TokenResponse. We persist
@@ -248,11 +254,11 @@ export async function getMe(): Promise<User> {
     permissions?: string[];
     is_event_scoped?: boolean;
   }>("/auth/me");
-  // Map the wrapped MeResponse back to a flat User the rest of the app
-  // expects (role from actor_type when profile doesn't carry it).
   return {
     ...raw.profile,
     role: (raw.profile?.role ?? raw.actor_type) as User["role"],
+    event_id: raw.event_id ?? null,
+    is_event_scoped: raw.is_event_scoped,
   };
 }
 
@@ -467,11 +473,11 @@ export async function listRoundJudges(roundId: string): Promise<JudgeAssignment[
 }
 
 export async function autoAssignJudges(
-  roundId: string,
+  eventId: string,
   judgesPerTeam: number = 2
-): Promise<{ success: boolean; assignments: JudgeAssignment[] }> {
-  return apiFetch<{ success: boolean; assignments: JudgeAssignment[] }>(
-    `/judges/auto-assign/${roundId}?judges_per_team=${judgesPerTeam}`,
+): Promise<{ message: string; approval_id: string }> {
+  return apiFetch<{ message: string; approval_id: string }>(
+    `/judges/${eventId}/auto-assign?judges_per_team=${judgesPerTeam}`,
     { method: "POST" }
   );
 }
@@ -694,4 +700,94 @@ export function getRoleDashboard(role: UserRole): string {
     default:
       return "/dashboard";
   }
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+
+export async function getParticipantDashboard(
+  eventId: string
+): Promise<ParticipantDashboard> {
+  return apiFetch<ParticipantDashboard>(`/dashboard/participant/${eventId}`);
+}
+
+export async function getJudgeDashboard(
+  eventId: string
+): Promise<JudgeDashboard> {
+  return apiFetch<JudgeDashboard>(`/dashboard/judge/${eventId}`);
+}
+
+export async function getOrganizerDashboard(
+  eventId: string
+): Promise<OrganizerDashboard> {
+  return apiFetch<OrganizerDashboard>(`/dashboard/organizer/${eventId}`);
+}
+
+// ─── LEADERBOARD ──────────────────────────────────────────────────────────────
+
+export async function getLeaderboard(roundId: string): Promise<Submission[]> {
+  return apiFetch<Submission[]>(`/leaderboard/${roundId}`);
+}
+
+// ─── PIPELINE ─────────────────────────────────────────────────────────────────
+
+export async function proposeStageTransition(
+  eventId: string,
+  targetStage: string,
+  cutoffScore: number
+): Promise<{ message: string; approval_id: string }> {
+  return apiFetch<{ message: string; approval_id: string }>(
+    `/pipeline/${eventId}/transition`,
+    {
+      method: "POST",
+      body: JSON.stringify({ target_stage: targetStage, cutoff_score: cutoffScore }),
+    }
+  );
+}
+
+// ─── THEMES ───────────────────────────────────────────────────────────────────
+
+export async function listThemes(eventId: string): Promise<Theme[]> {
+  return apiFetch<Theme[]>(`/themes/${eventId}`);
+}
+
+export async function createTheme(
+  eventId: string,
+  body: { name: string; description?: string; required_skills?: string[] }
+): Promise<Theme> {
+  return apiFetch<Theme>(`/themes/${eventId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateTeamTheme(
+  eventId: string,
+  teamId: string,
+  themeId: string | null
+): Promise<Team> {
+  return apiFetch<Team>(`/teams/${eventId}/${teamId}/theme`, {
+    method: "PUT",
+    body: JSON.stringify({ theme_id: themeId }),
+  });
+}
+
+// ─── TEAM PREFERENCES ────────────────────────────────────────────────────────
+
+export async function getTeamPreferences(
+  eventId: string,
+  teamId: string
+): Promise<TeamPreference[]> {
+  return apiFetch<TeamPreference[]>(`/teams/${eventId}/${teamId}/preferences`);
+}
+
+export async function submitTeamPreference(
+  eventId: string,
+  teamId: string,
+  preferred_name: string,
+  preferred_theme_id?: string
+): Promise<void> {
+  return apiFetch<void>(`/teams/${eventId}/${teamId}/preferences`, {
+    method: "POST",
+    body: JSON.stringify({ preferred_name, preferred_theme_id: preferred_theme_id ?? null }),
+  });
 }

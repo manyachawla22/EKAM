@@ -28,6 +28,8 @@ export interface User {
   role: UserRole;
   organization?: string;
   is_active: boolean;
+  event_id?: string | null;
+  is_event_scoped?: boolean;
 }
 
 export interface Event {
@@ -371,6 +373,58 @@ export interface AutoFormTeamsResponse {
   teams: Team[];
   leftovers: Participant[];
   message: string;
+}
+
+// ─── Themes ───────────────────────────────────────────────────────────────────
+
+export interface Theme {
+  id: string;
+  event_id: string;
+  name: string;
+  description?: string;
+  required_skills?: string[];
+  created_at?: string;
+}
+
+// ─── Team Preferences ─────────────────────────────────────────────────────────
+
+export interface TeamPreference {
+  id: string;
+  team_id: string;
+  participant_id: string;
+  preferred_name: string;
+  preferred_theme_id: string | null;
+  submitted_at: string;
+}
+
+// ─── Dashboard Response Shapes ────────────────────────────────────────────────
+
+export interface ParticipantDashboard {
+  team: { id: string; name: string; theme_id?: string | null; member_count?: number } | null;
+  submissions: Array<{ id: string; round_id: string; final_score?: number | null; submitted_at?: string }>;
+  progression_status: "pending" | "advancing" | "eliminated";
+  notifications: Array<{ id: string; title: string; message: string; type: string; created_at: string }>;
+}
+
+export interface JudgeDashboard {
+  assigned_teams: Array<{ team_id: string; team_name: string; theme_id?: string | null; submission_id?: string | null }>;
+  pending_evaluations: Array<{ submission_id: string; team_name: string; team_id: string }>;
+  completed_evaluations: Array<{ submission_id: string; team_name: string; score: number; evaluated_at: string }>;
+  notifications: Array<{ id: string; title: string; message: string; type: string; created_at: string }>;
+  summary: { total_assigned: number; pending: number; completed: number };
+}
+
+export interface OrganizerDashboard {
+  stats: {
+    total_participants: number;
+    total_judges: number;
+    total_teams: number;
+    total_submissions: number;
+    pending_approvals: number;
+  };
+  pending_approvals: Array<{ id: string; request_type: string; requested_by?: string | null; requested_at: string; status: string }>;
+  anomalies: Array<{ id: string; anomaly_type: string; severity: number; description: string; created_at: string }>;
+  rounds: Array<{ id: string; name: string; status: string; start_date?: string; end_date?: string }>;
 }
 
 // ─── API Response Wrappers ────────────────────────────────────────────────────
