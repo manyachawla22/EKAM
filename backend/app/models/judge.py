@@ -52,6 +52,10 @@ class Judge(Base):
 
     last_login = Column(DateTime(timezone=True), nullable=True)
 
+    # Invite flow
+    invite_token = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=True)
+    invite_status = Column(String, default="pending")  # pending / accepted / declined
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now()

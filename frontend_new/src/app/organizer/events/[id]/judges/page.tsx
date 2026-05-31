@@ -5,11 +5,12 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Zap, UserCheck, Mail } from "lucide-react";
+import { Plus, Zap, UserCheck, Mail, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   listJudges,
   inviteJudge,
+  deleteJudge,
   listRounds,
   autoAssignJudges,
   uploadJudgesCsv,
@@ -69,6 +70,17 @@ export default function JudgesPage() {
       .catch((err: Error) => toast.error(err.message || "Failed to load data"))
       .finally(() => setLoading(false));
   }, [id, authLoading, user]);
+
+  const handleDelete = async (judgeId: string) => {
+    if (!id || !window.confirm("Remove this judge from the event?")) return;
+    try {
+      await deleteJudge(id, judgeId);
+      setJudges((prev) => prev.filter((j) => j.id !== judgeId));
+      toast.success("Judge removed");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove judge");
+    }
+  };
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -349,6 +361,26 @@ export default function JudgesPage() {
                   {j.institution}
                 </span>
               )}
+              <button
+                onClick={() => handleDelete(j.id)}
+                title="Remove judge"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "rgba(255,255,255,0.2)",
+                  padding: "0.25rem",
+                  borderRadius: "0.375rem",
+                  transition: "color 0.2s",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = "#f87171")}
+                onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.2)")}
+              >
+                <Trash2 size={15} />
+              </button>
             </motion.div>
           ))}
         </div>

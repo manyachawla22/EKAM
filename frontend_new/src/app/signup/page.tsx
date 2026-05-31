@@ -18,13 +18,6 @@ import { loginUser, getRoleDashboard } from "@/lib/api";
 import { stashPendingSignup } from "@/lib/auth-context";
 import ParticleBackground from "@/components/landing/ParticleBackground";
 import Button from "@/components/ui/Button";
-import type { UserRole } from "@/types";
-
-const roleOptions: { value: UserRole; label: string; description: string }[] = [
-  { value: "participant", label: "Participant", description: "Join events" },
-  { value: "organizer", label: "Organizer", description: "Run events" },
-  { value: "judge", label: "Judge", description: "Evaluate work" },
-];
 
 const labelStyle: React.CSSProperties = {
   display: "block",
@@ -65,7 +58,6 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [role, setRole] = useState<UserRole | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -75,10 +67,6 @@ export default function SignupPage() {
     e.preventDefault();
     if (!name || !email || !password) {
       toast.error("Please fill in all fields");
-      return;
-    }
-    if (!role) {
-      toast.error("Please choose a role to continue");
       return;
     }
     if (password !== confirmPassword) {
@@ -91,10 +79,10 @@ export default function SignupPage() {
     }
     setLoading(true);
     try {
-      stashPendingSignup(role, name);
+      stashPendingSignup("organizer", name);
       await createUserWithEmailAndPassword(auth, email, password);
-      const profile = await loginUser({ name, role });
-      toast.success("Account created successfully!");
+      const profile = await loginUser({ name, role: "organizer" });
+      toast.success("Organizer account created!");
       router.push(getRoleDashboard(profile.role));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Signup failed";
@@ -111,26 +99,19 @@ export default function SignupPage() {
   };
 
   const handleGoogleSignup = async () => {
-    if (!role) {
-      toast.error("Please choose a role before continuing with Google");
-      return;
-    }
     setGoogleLoading(true);
     try {
-      stashPendingSignup(role);
+      stashPendingSignup("organizer");
       await signInWithPopup(auth, googleProvider);
       const profile = await loginUser({
         name: auth.currentUser?.displayName || undefined,
-        role,
+        role: "organizer",
       });
-      toast.success("Account created!");
+      toast.success("Organizer account created!");
       router.push(getRoleDashboard(profile.role));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Google sign-in failed";
-      console.error("[Google signup]", err);
       if (!message.includes("popup-closed")) {
-        // Surface the real error from the backend instead of a generic
-        // "please try again" — much easier to debug.
         toast.error(message);
       }
     } finally {
@@ -164,7 +145,6 @@ export default function SignupPage() {
         style={{ position: "absolute", inset: 0, opacity: 0.4, pointerEvents: "none" }}
       />
 
-      {/* Animated glow */}
       <motion.div
         style={{
           position: "absolute",
@@ -187,7 +167,6 @@ export default function SignupPage() {
         transition={{ type: "spring", stiffness: 180, damping: 22 }}
         style={{ position: "relative", zIndex: 10, width: "100%", maxWidth: "30rem" }}
       >
-        {/* Outer glow */}
         <motion.div
           style={{
             position: "absolute",
@@ -244,10 +223,10 @@ export default function SignupPage() {
             </motion.div>
             <div style={{ textAlign: "center" }}>
               <h1 style={{ fontSize: "1.5rem", fontWeight: 900, fontStyle: "italic", color: "#fff", margin: 0 }}>
-                Create account
+                Create organizer account
               </h1>
               <p style={{ marginTop: "0.25rem", fontSize: "0.875rem", color: "rgba(255,255,255,0.4)" }}>
-                Join EKAM today
+                Participants & judges are added by you
               </p>
             </div>
           </motion.div>
@@ -295,42 +274,8 @@ export default function SignupPage() {
               </div>
             </motion.div>
 
-            {/* Role */}
-            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.26 }}>
-              <label style={{ ...labelStyle, marginBottom: "0.625rem" }}>I am joining as...</label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.5rem" }}>
-                {roleOptions.map((opt) => {
-                  const isSelected = role === opt.value;
-                  return (
-                    <motion.button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setRole(opt.value)}
-                      whileHover={{ y: -2 }}
-                      whileTap={{ scale: 0.97 }}
-                      style={{
-                        borderRadius: "0.5rem",
-                        border: `1px solid ${isSelected ? "rgba(232,80,58,0.6)" : "#222"}`,
-                        background: isSelected ? "rgba(232,80,58,0.1)" : "transparent",
-                        padding: "0.625rem",
-                        textAlign: "left",
-                        cursor: "pointer",
-                        transition: "all 0.2s",
-                        color: isSelected ? "#fff" : "rgba(255,255,255,0.4)",
-                      }}
-                    >
-                      <p style={{ fontSize: "0.75rem", fontWeight: 600, margin: 0 }}>{opt.label}</p>
-                      <p style={{ marginTop: "0.125rem", fontSize: "0.625rem", lineHeight: 1.2, color: "rgba(255,255,255,0.4)" }}>
-                        {opt.description}
-                      </p>
-                    </motion.button>
-                  );
-                })}
-              </div>
-            </motion.div>
-
             {/* Password */}
-            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.29 }}>
+            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.26 }}>
               <label style={labelStyle}>Password</label>
               <div style={{ position: "relative" }}>
                 <div style={iconWrapStyle}>
@@ -368,7 +313,7 @@ export default function SignupPage() {
             </motion.div>
 
             {/* Confirm password */}
-            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.32 }}>
+            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.29 }}>
               <label style={labelStyle}>Confirm Password</label>
               <div style={{ position: "relative" }}>
                 <div style={iconWrapStyle}>
@@ -391,11 +336,11 @@ export default function SignupPage() {
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.35 }}
+              transition={{ delay: 0.32 }}
               style={{ marginTop: "0.5rem" }}
             >
               <Button type="submit" variant="primary" size="lg" fullWidth loading={loading}>
-                Create Account
+                Create Organizer Account
               </Button>
             </motion.div>
           </form>
@@ -403,7 +348,7 @@ export default function SignupPage() {
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.4 }}
+            transition={{ delay: 0.37 }}
             style={{ margin: "1.25rem 0", display: "flex", alignItems: "center", gap: "0.75rem" }}
           >
             <div style={{ flex: 1, height: "1px", background: "#222" }} />
@@ -414,7 +359,7 @@ export default function SignupPage() {
           <motion.button
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.45 }}
+            transition={{ delay: 0.42 }}
             whileHover={{ scale: 1.01 }}
             whileTap={{ scale: 0.98 }}
             onClick={handleGoogleSignup}

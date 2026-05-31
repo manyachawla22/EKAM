@@ -421,6 +421,47 @@ export async function listJudges(eventId: string): Promise<Judge[]> {
   return apiFetch<Judge[]>(`/judges/${eventId}`);
 }
 
+export interface JudgeAssignmentDetail {
+  assignment_id: string;
+  round_id: string;
+  round_name: string;
+  round_status: string;
+  team_id: string;
+  team_name: string;
+  submission_id: string | null;
+  submission_status: string | null;
+  already_evaluated: boolean;
+}
+
+export interface JudgeInviteDetail {
+  judge_name: string;
+  judge_email: string;
+  event_name: string;
+  event_hash: string;
+  invite_status: "pending" | "accepted" | "declined";
+}
+
+export async function getJudgeAssignments(
+  eventId: string,
+  judgeId: string
+): Promise<JudgeAssignmentDetail[]> {
+  return apiFetch<JudgeAssignmentDetail[]>(`/judges/${eventId}/${judgeId}/assignments`);
+}
+
+export async function getJudgeInvite(token: string): Promise<JudgeInviteDetail> {
+  return apiFetch<JudgeInviteDetail>(`/judges/invite/${token}`);
+}
+
+export async function respondJudgeInvite(
+  token: string,
+  accepted: boolean
+): Promise<JudgeInviteDetail> {
+  return apiFetch<JudgeInviteDetail>("/judges/invite/respond", {
+    method: "POST",
+    body: JSON.stringify({ token, accepted }),
+  });
+}
+
 export async function listRoundJudges(roundId: string): Promise<JudgeAssignment[]> {
   return apiFetch<JudgeAssignment[]>(`/judges/round/${roundId}`);
 }

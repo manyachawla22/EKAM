@@ -22,6 +22,7 @@ import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Navbar from "@/components/layout/Navbar";
+import TeamDetailModal from "@/components/ui/TeamDetailModal";
 
 const cardStyle: React.CSSProperties = {
   borderRadius: "0.75rem",
@@ -59,6 +60,7 @@ export default function ParticipantEventDetailPage() {
   const [myTeam, setMyTeam] = useState<Team | null>(null);
   const [rounds, setRounds] = useState<Round[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [teamModalOpen, setTeamModalOpen] = useState(false);
   const [selectedRound, setSelectedRound] = useState<string>("");
   const [attachments, setAttachments] = useState<string[]>([""]);
 
@@ -392,40 +394,51 @@ export default function ParticipantEventDetailPage() {
 
           {/* Team badge */}
           {myTeam && (
-            <div
-              style={{
-                borderRadius: "0.75rem",
-                border: "1px solid rgba(99,102,241,0.2)",
-                background: "rgba(99,102,241,0.1)",
-                padding: "1rem",
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-              }}
-            >
-              <Trophy size={20} color="#6366f1" />
-              <div>
-                <p
-                  style={{
-                    fontSize: "0.875rem",
-                    fontWeight: 600,
-                    color: "#fff",
-                    margin: 0,
-                  }}
-                >
-                  Your Team: {myTeam.name}
-                </p>
-                <p
-                  style={{
-                    fontSize: "0.75rem",
-                    color: "rgba(255,255,255,0.4)",
-                    margin: 0,
-                  }}
-                >
-                  {myTeam.members?.length || 0} members
-                </p>
-              </div>
-            </div>
+            <>
+              <button
+                onClick={() => setTeamModalOpen(true)}
+                style={{
+                  borderRadius: "0.75rem",
+                  border: "1px solid rgba(99,102,241,0.25)",
+                  background: "rgba(99,102,241,0.1)",
+                  padding: "1rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.75rem",
+                  width: "100%",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "border-color 0.2s, background 0.2s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(99,102,241,0.5)";
+                  e.currentTarget.style.background = "rgba(99,102,241,0.15)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(99,102,241,0.25)";
+                  e.currentTarget.style.background = "rgba(99,102,241,0.1)";
+                }}
+              >
+                <Trophy size={20} color="#6366f1" />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "#fff", margin: 0 }}>
+                    Your Team: {myTeam.name}
+                  </p>
+                  <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>
+                    {myTeam.members?.length || 0} member{(myTeam.members?.length || 0) !== 1 ? "s" : ""} · Click to view
+                  </p>
+                </div>
+                <Users size={16} color="rgba(99,102,241,0.6)" />
+              </button>
+              <TeamDetailModal
+                open={teamModalOpen}
+                onClose={() => setTeamModalOpen(false)}
+                eventId={id}
+                teamId={myTeam.id}
+                teamName={myTeam.name}
+                initialTeam={myTeam}
+              />
+            </>
           )}
 
           {/* Submit section */}

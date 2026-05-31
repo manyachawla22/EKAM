@@ -23,7 +23,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
-      <body className="bg-[#0a0a0a] text-white antialiased">
+      <body className="bg-[#0a0a0a] text-white antialiased" suppressHydrationWarning>
         <AuthProvider>
           {children}
           <Toaster

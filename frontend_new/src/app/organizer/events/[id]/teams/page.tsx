@@ -5,13 +5,15 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Zap, Trophy, Users, Crown, UserPlus } from "lucide-react";
+import { Plus, Zap, Trophy, Users, Crown, UserPlus, Trash2 } from "lucide-react";
+import TeamDetailModal from "@/components/ui/TeamDetailModal";
 import { toast } from "sonner";
 import {
   listTeams,
   autoFormTeams,
   createTeam,
   assignTeamMember,
+  deleteTeam,
   listParticipants,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -38,6 +40,7 @@ export default function TeamsPage() {
   const { user, loading: authLoading } = useAuth();
 
   const [teams, setTeams] = useState<Team[]>([]);
+  const [teamModal, setTeamModal] = useState<Team | null>(null);
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [loading, setLoading] = useState(true);
   const [autoForming, setAutoForming] = useState(false);
@@ -118,6 +121,17 @@ export default function TeamsPage() {
       toast.error(err instanceof Error ? err.message : "Failed to create team");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleDeleteTeam = async (teamId: string) => {
+    if (!id || !window.confirm("Delete this team? This cannot be undone.")) return;
+    try {
+      await deleteTeam(id, teamId);
+      setTeams((prev) => prev.filter((t) => t.id !== teamId));
+      toast.success("Team deleted");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to delete team");
     }
   };
 
@@ -364,18 +378,22 @@ export default function TeamsPage() {
                     <Trophy size={20} />
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <h3
+                    <button
+                      onClick={() => setTeamModal(team)}
                       style={{
-                        fontWeight: 700,
-                        color: "#fff",
-                        margin: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
+                        background: "transparent", border: "none", cursor: "pointer",
+                        padding: 0, textAlign: "left",
+                        fontWeight: 700, color: "#fff", fontSize: "1rem",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        maxWidth: "100%",
+                        textDecoration: "underline", textDecorationColor: "rgba(255,255,255,0.15)",
+                        textUnderlineOffset: "3px", transition: "color 0.15s",
                       }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "#e8503a")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "#fff")}
                     >
                       {team.name}
-                    </h3>
+                    </button>
                     <p
                       style={{
                         fontSize: "0.75rem",
@@ -388,25 +406,47 @@ export default function TeamsPage() {
                     </p>
                   </div>
                 </div>
-                <button
-                  onClick={() => openAssignModal(team)}
-                  title="Add member"
-                  style={{
-                    display: "flex",
-                    height: "2rem",
-                    width: "2rem",
-                    flexShrink: 0,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: "0.5rem",
-                    border: "1px solid #222",
-                    color: "rgba(255,255,255,0.3)",
-                    background: "transparent",
-                    cursor: "pointer",
-                  }}
-                >
-                  <UserPlus size={14} />
-                </button>
+                <div style={{ display: "flex", gap: "0.375rem", flexShrink: 0 }}>
+                  <button
+                    onClick={() => openAssignModal(team)}
+                    title="Add member"
+                    style={{
+                      display: "flex",
+                      height: "2rem",
+                      width: "2rem",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRadius: "0.5rem",
+                      border: "1px solid #222",
+                      color: "rgba(255,255,255,0.3)",
+                      background: "transparent",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <UserPlus size={14} />
+                  </button>
+                  <button
+                    onClick={() => handleDeleteTeam(team.id)}
+                    title="Delete team"
+                    style={{
+                      display: "flex",
+                      height: "2rem",
+                      width: "2rem",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRadius: "0.5rem",
+                      border: "1px solid #222",
+                      color: "rgba(255,255,255,0.2)",
+                      background: "transparent",
+                      cursor: "pointer",
+                      transition: "color 0.2s",
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.color = "#f87171")}
+                    onMouseLeave={(e) => (e.currentTarget.style.color = "rgba(255,255,255,0.2)")}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
 
               {team.members && team.members.length > 0 ? (
@@ -613,6 +653,17 @@ export default function TeamsPage() {
           </div>
         </form>
       </Modal>
+
+      {teamModal && id && (
+        <TeamDetailModal
+          open={!!teamModal}
+          onClose={() => setTeamModal(null)}
+          eventId={id}
+          teamId={teamModal.id}
+          teamName={teamModal.name}
+          initialTeam={teamModal}
+        />
+      )}
     </div>
   );
 }
