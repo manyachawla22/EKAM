@@ -8,6 +8,7 @@ import csv
 import io
 from typing import List, Dict, Any
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.participant import Participant
@@ -26,7 +27,10 @@ def parse_participant_csv(file_content: bytes) -> List[Dict[str, Any]]:
     - skills (optional, comma-separated)
     """
     try:
-        content = file_content.decode("utf-8")
+        # utf-8-sig strips a leading BOM (Excel/Sheets add one). Without this,
+        # the first header — usually "name" — becomes "﻿name", so every
+        # row is missing its required field and is silently skipped (0 imported).
+        content = file_content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(content))
         
         participants_data = []
@@ -70,7 +74,10 @@ def parse_judge_csv(file_content: bytes) -> List[Dict[str, Any]]:
     - expertise (optional, comma-separated)
     """
     try:
-        content = file_content.decode("utf-8")
+        # utf-8-sig strips a leading BOM (Excel/Sheets add one). Without this,
+        # the first header — usually "name" — becomes "﻿name", so every
+        # row is missing its required field and is silently skipped (0 imported).
+        content = file_content.decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(content))
         
         judges_data = []
@@ -106,45 +113,89 @@ async def bulk_insert_participants(
     db: AsyncSession,
     event_id: str,
     participants_data: List[Dict[str, Any]]
-) -> int:
-    """Bulk insert participants into DB. Returns count inserted."""
-    count = 0
+) -> Dict[str, int]:
+    """
+    Bulk insert participants. Skips rows whose email already exists for this
+    event or repeats within the file, so re-uploading the same CSV is safe and
+    never trips the unique (event_id, email) constraint.
+    Returns {"inserted": n, "skipped": m}.
+    """
+    existing = await db.execute(
+        select(Participant.email).where(Participant.event_id == event_id)
+    )
+    seen = {e.lower() for (e,) in existing.all() if e}
+
+    inserted = 0
+    skipped = 0
     for data in participants_data:
-        p = Participant(
+        email = (data.get("email") or "").strip()
+        if not email or email.lower() in seen:
+            skipped += 1
+            continue
+        seen.add(email.lower())
+        db.add(Participant(
             event_id=event_id,
             name=data["name"],
-            email=data["email"],
+            email=email,
             institution=data.get("organization"),  # CSV uses 'organization', model uses 'institution'
             skills=data.get("skills") or [],
-        )
-        db.add(p)
-        count += 1
-        
-    if count > 0:
-        await db.commit()
-        
-    return count
+        ))
+        inserted += 1
+
+    if inserted > 0:
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to import participants (a row may conflict with existing data).",
+            )
+
+    return {"inserted": inserted, "skipped": skipped}
 
 
 async def bulk_insert_judges(
     db: AsyncSession,
     event_id: str,
     judges_data: List[Dict[str, Any]]
-) -> int:
-    """Bulk insert judges into DB. Returns count inserted."""
-    count = 0
+) -> Dict[str, int]:
+    """
+    Bulk insert judges. Skips rows whose email already exists for this event or
+    repeats within the file, so re-uploading the same CSV is safe and never
+    trips the unique (event_id, email) constraint.
+    Returns {"inserted": n, "skipped": m}.
+    """
+    existing = await db.execute(
+        select(Judge.email).where(Judge.event_id == event_id)
+    )
+    seen = {e.lower() for (e,) in existing.all() if e}
+
+    inserted = 0
+    skipped = 0
     for data in judges_data:
-        j = Judge(
+        email = (data.get("email") or "").strip()
+        if not email or email.lower() in seen:
+            skipped += 1
+            continue
+        seen.add(email.lower())
+        db.add(Judge(
             event_id=event_id,
             name=data["name"],
-            email=data["email"],
+            email=email,
             institution=data.get("organization"),  # CSV uses 'organization', model uses 'institution'
             expertise=data.get("expertise") or [],
-        )
-        db.add(j)
-        count += 1
-        
-    if count > 0:
-        await db.commit()
-        
-    return count
+        ))
+        inserted += 1
+
+    if inserted > 0:
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to import judges (a row may conflict with existing data).",
+            )
+
+    return {"inserted": inserted, "skipped": skipped}

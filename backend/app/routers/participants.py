@@ -53,13 +53,20 @@ async def upload_participant_csv(
         
     content = await file.read()
     participants_data = parse_participant_csv(content)
-    
-    count = await bulk_insert_participants(db, event_id, participants_data)
-    
-    return {
-        "message": f"Successfully imported {count} participants",
-        "count": count
-    }
+
+    result = await bulk_insert_participants(db, event_id, participants_data)
+    inserted, skipped = result["inserted"], result["skipped"]
+
+    if inserted > 0:
+        message = f"Successfully imported {inserted} participant{'s' if inserted != 1 else ''}"
+        if skipped:
+            message += f" ({skipped} skipped — already added or duplicate)"
+    elif skipped:
+        message = f"No new participants added — {skipped} already exist for this event."
+    else:
+        message = "No valid rows found. Ensure your CSV has 'name' and 'email' column headers."
+
+    return {"message": message, "count": inserted, "skipped": skipped}
 
 
 @router.post(

@@ -5,9 +5,9 @@ export const dynamic = "force-dynamic";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { createEvent, generateHash } from "@/lib/api";
+import { createEvent, createTheme, generateHash } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import Button from "@/components/ui/Button";
 import Input, { Textarea, Select } from "@/components/ui/Input";
@@ -28,6 +28,16 @@ export default function CreateEventPage() {
       | "platform_generated"
       | "preformed",
   });
+
+  // Themes participants can later pick from (created after the event itself).
+  const [themes, setThemes] = useState<{ name: string; description: string }[]>([]);
+
+  const addTheme = () =>
+    setThemes((prev) => [...prev, { name: "", description: "" }]);
+  const updateTheme = (i: number, field: "name" | "description", value: string) =>
+    setThemes((prev) => prev.map((t, idx) => (idx === i ? { ...t, [field]: value } : t)));
+  const removeTheme = (i: number) =>
+    setThemes((prev) => prev.filter((_, idx) => idx !== i));
 
   const handleChange = (
     field: string,
@@ -65,6 +75,24 @@ export default function CreateEventPage() {
         // organizer_id is required by the new backend EventCreate schema.
         organizer_id: profile.id,
       });
+
+      // Create any themes the organizer added — participants pick from these.
+      const validThemes = themes.filter((t) => t.name.trim());
+      if (validThemes.length > 0) {
+        const results = await Promise.allSettled(
+          validThemes.map((t) =>
+            createTheme(event.id, {
+              name: t.name.trim(),
+              description: t.description.trim() || undefined,
+            })
+          )
+        );
+        const failed = results.filter((r) => r.status === "rejected").length;
+        if (failed > 0) {
+          toast.warning(`Event created, but ${failed} theme(s) could not be saved.`);
+        }
+      }
+
       toast.success("Event created successfully!");
       router.push(`/organizer/events/${event.id}`);
     } catch (err) {
@@ -247,6 +275,81 @@ export default function CreateEventPage() {
                 fullWidth
               />
             </div>
+          </div>
+
+          <div style={card}>
+            <h2 style={sectionTitle}>Themes / Tracks</h2>
+            <p
+              style={{
+                margin: "-0.5rem 0 0",
+                fontSize: "0.8rem",
+                color: "rgba(255,255,255,0.4)",
+              }}
+            >
+              Optional. Add the themes participants can choose from (e.g. AI/ML,
+              Web3, Climate Tech). You can also add these later from the event page.
+            </p>
+
+            {themes.map((t, i) => (
+              <div
+                key={i}
+                style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start" }}
+              >
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <Input
+                    value={t.name}
+                    onChange={(e) => updateTheme(i, "name", e.target.value)}
+                    placeholder="Theme name — e.g., AI/ML"
+                    fullWidth
+                  />
+                  <Input
+                    value={t.description}
+                    onChange={(e) => updateTheme(i, "description", e.target.value)}
+                    placeholder="Short description (optional)"
+                    fullWidth
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeTheme(i)}
+                  title="Remove theme"
+                  style={{
+                    display: "flex",
+                    height: "2.5rem",
+                    width: "2.5rem",
+                    flexShrink: 0,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "0.5rem",
+                    border: "1px solid #222",
+                    background: "transparent",
+                    color: "rgba(255,255,255,0.3)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              onClick={addTheme}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.375rem",
+                alignSelf: "flex-start",
+                fontSize: "0.8rem",
+                color: "#e8503a",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <Plus size={14} /> Add theme
+            </button>
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem" }}>

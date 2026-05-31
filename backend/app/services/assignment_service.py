@@ -14,6 +14,7 @@ from app.models.participant import Participant
 from app.models.judge import Judge, JudgeAssignment
 from app.models.team import Team, TeamMember
 from app.models.event import Round, Event
+from app.models.theme import Theme
 from app.models.approval import RequestType
 
 from app.services.cpsat_team_service import generate_teams
@@ -213,23 +214,38 @@ async def propose_judge_assignment(
             f"All teams must select a theme before judge assignment can proceed."
         )
 
-    # Judge model uses `institution`, not `organization`
+    # Judge model uses `institution`, not `organization`.
+    # Use None (not a "Unknown" sentinel) when missing — the optimizer only
+    # treats a shared institution as a conflict when BOTH sides are known, so a
+    # placeholder must never collide.
     judge_dicts = [
         {
             "id": str(j.id),
             "name": j.name,
             "email": j.email,
-            "institution": j.institution or "Unknown",
+            "institution": j.institution or None,
             "expertise": j.expertise or [],
         }
         for j in judges_db
     ]
 
+    # Load each team's theme so the optimizer can score judge expertise against
+    # the theme name + its required skills (the scorer reads theme_name /
+    # required_skills). Without this the skill match never fires.
+    theme_ids = [t.theme_id for t in teams_db if t.theme_id]
+    theme_map: Dict[Any, Theme] = {}
+    if theme_ids:
+        theme_res = await db.execute(select(Theme).where(Theme.id.in_(theme_ids)))
+        theme_map = {th.id: th for th in theme_res.scalars().all()}
+
+    # Teams don't track an institution, so leave it None (no conflict applied).
     team_dicts = [
         {
             "id": str(t.id),
-            "institution": "Unknown",
+            "institution": None,
             "theme": str(t.theme_id) if t.theme_id else "General",
+            "theme_name": theme_map[t.theme_id].name if t.theme_id in theme_map else "",
+            "required_skills": (theme_map[t.theme_id].required_skills or []) if t.theme_id in theme_map else [],
         }
         for t in teams_db
     ]

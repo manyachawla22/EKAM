@@ -98,13 +98,27 @@ async function apiFetch<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const headers = await getAuthHeaders();
-  const response = await fetch(`${API_BASE}${path}`, {
+  const init: RequestInit = {
     ...options,
     headers: {
       ...headers,
       ...(options.headers || {}),
     },
-  });
+  };
+  const url = `${API_BASE}${path}`;
+
+  // A bare `fetch` rejection (TypeError: Failed to fetch) means the request
+  // never reached the server — typically the dev backend briefly dropping the
+  // connection while uvicorn --reload restarts, or a transient network blip.
+  // Since the server never processed the request, retrying once is safe even
+  // for POST/PUT. This removes the "failed first, worked on the second click".
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch {
+    await new Promise((r) => setTimeout(r, 600));
+    response = await fetch(url, init);
+  }
 
   if (!response.ok) {
     let errorMessage = `API Error: ${response.status}`;
@@ -646,11 +660,17 @@ async function uploadCsv<T>(path: string, file: File): Promise<T> {
   }
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: cleaned,
-    body: form,
-  });
+  const doFetch = () =>
+    fetch(`${API_BASE}${path}`, { method: "POST", headers: cleaned, body: form });
+  // Retry once on a network-level failure (e.g. dev backend reloading) so a
+  // transient blip doesn't surface as "Failed to fetch".
+  let response: Response;
+  try {
+    response = await doFetch();
+  } catch {
+    await new Promise((r) => setTimeout(r, 600));
+    response = await doFetch();
+  }
   if (!response.ok) {
     let msg = `Upload failed: ${response.status}`;
     try {
@@ -754,9 +774,16 @@ export async function createTheme(
   eventId: string,
   body: { name: string; description?: string; required_skills?: string[] }
 ): Promise<Theme> {
+  // The backend requires event_id in the body; it must match the path.
   return apiFetch<Theme>(`/themes/${eventId}`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, event_id: eventId }),
+  });
+}
+
+export async function deleteTheme(eventId: string, themeId: string): Promise<void> {
+  return apiFetch<void>(`/themes/${eventId}/${themeId}`, {
+    method: "DELETE",
   });
 }
 

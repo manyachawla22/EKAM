@@ -183,6 +183,8 @@ export default function TeamDetailModal({
                         m.user?.name ||
                         m.participant?.email ||
                         `Member ${String(m.participant_id).slice(0, 8)}`;
+                      const email = m.participant?.email || m.user?.email || null;
+                      const institution = m.participant?.institution || null;
                       return (
                         <div
                           key={m.id}
@@ -217,19 +219,52 @@ export default function TeamDetailModal({
                           >
                             {name.charAt(0).toUpperCase()}
                           </div>
-                          <span
-                            style={{
-                              flex: 1,
-                              fontSize: "0.875rem",
-                              color: "#fff",
-                              fontWeight: m.is_leader ? 600 : 400,
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                          >
-                            {name}
-                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <p
+                              style={{
+                                margin: 0,
+                                fontSize: "0.875rem",
+                                color: "#fff",
+                                fontWeight: m.is_leader ? 600 : 400,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {name}
+                            </p>
+                            {email && (
+                              <a
+                                href={`mailto:${email}`}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  display: "block",
+                                  fontSize: "0.72rem",
+                                  color: "rgba(99,102,241,0.8)",
+                                  textDecoration: "none",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {email}
+                              </a>
+                            )}
+                            {institution && (
+                              <p
+                                style={{
+                                  margin: 0,
+                                  fontSize: "0.7rem",
+                                  color: "rgba(255,255,255,0.35)",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {institution}
+                              </p>
+                            )}
+                          </div>
                           {m.is_leader && (
                             <div
                               style={{

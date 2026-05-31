@@ -18,6 +18,16 @@ def assign_judges(
 
     num_teams = len(teams)
 
+    # Each team needs `judges_per_team` distinct judges, so the event must have
+    # at least that many judges. Fail early with a clear message instead of
+    # letting the solver return a generic "infeasible".
+    if num_judges < judges_per_team:
+        raise ValueError(
+            f"Need at least {judges_per_team} judges to assign "
+            f"{judges_per_team} per team, but this event has {num_judges}. "
+            f"Add more judges or lower judges-per-team."
+        )
+
     x = {}
 
     for j in range(num_judges):
@@ -64,18 +74,19 @@ def assign_judges(
 
     # ------------------------
     # CONSTRAINT 3
-    # avoid same institution
+    # avoid same institution — only when BOTH sides have a known institution.
+    # Teams generally have no institution, and a missing/unknown value must NOT
+    # be treated as a conflict (otherwise it bans every judge → infeasible).
     # ------------------------
 
     for j in range(num_judges):
 
         for t in range(num_teams):
 
-            if (
-                judges[j]["institution"]
-                ==
-                teams[t]["institution"]
-            ):
+            j_inst = judges[j].get("institution")
+            t_inst = teams[t].get("institution")
+
+            if j_inst and t_inst and j_inst == t_inst:
 
                 model.Add(
                     x[j, t] == 0
@@ -130,8 +141,9 @@ def assign_judges(
         cp_model.FEASIBLE
     ):
 
-        raise Exception(
-            "No feasible judge assignment found"
+        raise ValueError(
+            "Could not assign judges with the current settings. "
+            "Try adding more judges or lowering judges-per-team."
         )
 
     assignments = []

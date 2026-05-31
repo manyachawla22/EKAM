@@ -8,13 +8,16 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   Users, Layers, Send, UserCheck, BarChart2, Edit2, ArrowLeft,
-  Trophy, Trash2, Save, ShieldCheck, AlertTriangle, CheckCircle2, Award,
+  Trophy, Trash2, Save, ShieldCheck, AlertTriangle, CheckCircle2, Award, Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
   getEvent,
   getOrganizerDashboard,
   listRounds,
+  listThemes,
+  createTheme,
+  deleteTheme,
   updateEvent,
   deleteEvent,
   autoFormTeams,
@@ -22,7 +25,7 @@ import {
   proposeStageTransition,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Event, EventStatus, EventStage, Round, OrganizerDashboard } from "@/types";
+import type { Event, EventStatus, EventStage, Round, OrganizerDashboard, Theme } from "@/types";
 import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
@@ -69,6 +72,10 @@ export default function EventDetailPage() {
   const [event, setEvent] = useState<Event | null>(null);
   const [dashboard, setDashboard] = useState<OrganizerDashboard | null>(null);
   const [rounds, setRounds] = useState<Round[]>([]);
+  const [themes, setThemes] = useState<Theme[]>([]);
+  const [themeName, setThemeName] = useState("");
+  const [themeDesc, setThemeDesc] = useState("");
+  const [themeBusy, setThemeBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [editOpen, setEditOpen] = useState(false);
@@ -92,14 +99,16 @@ export default function EventDetailPage() {
     if (!id) return;
     setLoading(true);
     try {
-      const [ev, dash, rds] = await Promise.all([
+      const [ev, dash, rds, thms] = await Promise.all([
         getEvent(id),
         getOrganizerDashboard(id).catch(() => null),
         listRounds(id).catch(() => [] as Round[]),
+        listThemes(id).catch(() => [] as Theme[]),
       ]);
       setEvent(ev);
       setDashboard(dash);
       setRounds(rds);
+      setThemes(thms);
       setEditForm({
         name: ev.name, type: ev.type, description: ev.description,
         status: ev.status, max_participants: ev.max_participants,
@@ -131,6 +140,39 @@ export default function EventDetailPage() {
       toast.error(err instanceof Error ? err.message : "Update failed");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAddTheme = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!themeName.trim()) { toast.error("Theme name is required"); return; }
+    setThemeBusy(true);
+    try {
+      await createTheme(id, {
+        name: themeName.trim(),
+        description: themeDesc.trim() || undefined,
+      });
+      setThemeName("");
+      setThemeDesc("");
+      setThemes(await listThemes(id).catch(() => themes));
+      toast.success("Theme added");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to add theme");
+    } finally {
+      setThemeBusy(false);
+    }
+  };
+
+  const handleDeleteTheme = async (themeId: string) => {
+    setThemeBusy(true);
+    try {
+      await deleteTheme(id, themeId);
+      setThemes((prev) => prev.filter((t) => t.id !== themeId));
+      toast.success("Theme removed");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to remove theme");
+    } finally {
+      setThemeBusy(false);
     }
   };
 
@@ -185,6 +227,24 @@ export default function EventDetailPage() {
     }
   };
 
+  const handleAdvanceStage = async () => {
+    if (!event) return;
+    const idx = ALL_STAGES.indexOf(event.stage);
+    const next = idx >= 0 && idx < ALL_STAGES.length - 1 ? ALL_STAGES[idx + 1] : null;
+    if (!next) return;
+    setActionLoading(true);
+    try {
+      const updated = await updateEvent(id, { stage: next });
+      setEvent(updated);
+      toast.success(`Stage advanced to ${next.replace("_", " ")}.`);
+      fetchAll();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to advance stage");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -211,6 +271,8 @@ export default function EventDetailPage() {
   }
 
   const stageIdx = ALL_STAGES.indexOf(event.stage);
+  const nextStage =
+    stageIdx >= 0 && stageIdx < ALL_STAGES.length - 1 ? ALL_STAGES[stageIdx + 1] : null;
 
   // Stats from dashboard
   const stats = dashboard?.stats ?? {
@@ -362,7 +424,75 @@ export default function EventDetailPage() {
                 <Link href={`/organizer/events/${id}/reports`} style={{ fontSize: "0.875rem", color: "#6366f1", textDecoration: "underline" }}>Generate Report →</Link>
               </div>
             )}
+
+            {/* Direct stage advance — moves the pipeline forward one step.
+                Use this to progress between rounds; the cutoff "Propose Transition"
+                above runs the approval-gated progression with notifications. */}
+            {nextStage && (
+              <div style={{ marginTop: "0.875rem", paddingTop: "0.875rem", borderTop: "1px solid rgba(232,80,58,0.15)", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                <span style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.45)" }}>
+                  Done with this stage?
+                </span>
+                <Button variant="secondary" onClick={handleAdvanceStage} loading={actionLoading}>
+                  Advance to {nextStage.replace("_", " ")} →
+                </Button>
+              </div>
+            )}
           </div>
+        </div>
+
+        {/* Themes / Tracks */}
+        <div style={card}>
+          <h2 style={{ fontSize: "0.875rem", fontWeight: 700, color: "#fff", margin: "0 0 0.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <Layers size={16} color="#e8503a" /> Themes / Tracks
+          </h2>
+          <p style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.4)", margin: "0 0 1rem" }}>
+            Participants choose from these themes for their team. Add or remove them anytime.
+          </p>
+
+          {themes.length === 0 ? (
+            <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.35)", margin: "0 0 1rem" }}>
+              No themes yet. Add one below.
+            </p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1rem" }}>
+              {themes.map((t) => (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.625rem 0.75rem", borderRadius: "0.5rem", background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e1e" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "#fff", margin: 0 }}>{t.name}</p>
+                    {t.description && <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>{t.description}</p>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTheme(t.id)}
+                    disabled={themeBusy}
+                    title="Delete theme"
+                    style={{ display: "flex", height: "2rem", width: "2rem", flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: "0.5rem", border: "1px solid #222", background: "transparent", color: "rgba(255,255,255,0.35)", cursor: themeBusy ? "default" : "pointer" }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={handleAddTheme} style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+            <input
+              value={themeName}
+              onChange={(e) => setThemeName(e.target.value)}
+              placeholder="Theme name — e.g., AI/ML"
+              style={{ ...inputBase, flex: "2 1 12rem", width: "auto" }}
+            />
+            <input
+              value={themeDesc}
+              onChange={(e) => setThemeDesc(e.target.value)}
+              placeholder="Description (optional)"
+              style={{ ...inputBase, flex: "3 1 14rem", width: "auto" }}
+            />
+            <Button type="submit" variant="primary" loading={themeBusy}>
+              <Plus size={16} /> Add Theme
+            </Button>
+          </form>
         </div>
 
         {/* Pending approvals */}
@@ -486,6 +616,9 @@ export default function EventDetailPage() {
             </select>
           </div>
           <Input label="Max Participants" type="number" value={String(editForm.max_participants)} onChange={(e) => setEditForm((p) => ({ ...p, max_participants: parseInt(e.target.value) || 0 }))} fullWidth />
+          <p style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.35)", margin: 0 }}>
+            Manage themes from the “Themes / Tracks” section on the event page.
+          </p>
           <div style={{ display: "flex", gap: "0.75rem", paddingTop: "0.5rem" }}>
             <Button type="button" variant="secondary" onClick={() => setEditOpen(false)}>Cancel</Button>
             <Button type="submit" variant="primary" loading={saving} style={{ flex: 1 }}>

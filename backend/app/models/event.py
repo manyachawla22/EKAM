@@ -35,6 +35,7 @@ class EventStage(str, enum.Enum):
     team_formation = "team_formation"
     submission = "submission"
     evaluation = "evaluation"
+    results = "results"
     completed = "completed"
 
 
