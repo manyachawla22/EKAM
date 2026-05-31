@@ -9,3 +9,4 @@ alembic
 python-jose[cryptography]
 python-multipart
 passlib[bcrypt]
+scikit-learn
