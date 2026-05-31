@@ -3,7 +3,7 @@ from .event import Event, Round
 from .theme import Theme
 from .participant import Participant
 from .judge import Judge, JudgeAssignment
-from .team import Team, TeamMember
+from .team import Team, TeamMember, TeamPreference
 from .submission import Submission, Evaluation
 from .report import Report
 from .auth import AuthToken, OTPCode, UserSession

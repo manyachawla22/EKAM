@@ -76,12 +76,20 @@ export default function JudgeAssignmentsPage() {
   const [loading, setLoading] = useState(true);
   const [teamModal, setTeamModal] = useState<{ eventId: string; teamId: string; teamName: string } | null>(null);
 
+  // Redirect event-scoped judges to their dashboard
+  useEffect(() => {
+    if (!authLoading && profile?.event_id) {
+      window.location.replace(`/judge/events/${profile.event_id}`);
+    }
+  }, [authLoading, profile]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!profile) {
       setLoading(false);
       return;
     }
+    if (profile.event_id) return; // will redirect above
 
     (async () => {
       try {

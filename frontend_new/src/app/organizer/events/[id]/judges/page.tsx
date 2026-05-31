@@ -14,7 +14,10 @@ import {
   listRounds,
   autoAssignJudges,
   uploadJudgesCsv,
+  getJudgeAssignments,
+  getEvaluations,
 } from "@/lib/api";
+import type { JudgeAssignmentDetail } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Judge, Round } from "@/types";
 import Button from "@/components/ui/Button";
@@ -47,10 +50,9 @@ export default function JudgesPage() {
   const [autoAssigning, setAutoAssigning] = useState(false);
   const [selectedRound, setSelectedRound] = useState<string>("");
 
-  const [inviteForm, setInviteForm] = useState({
-    email: "",
-    name: "",
-  });
+  const [inviteForm, setInviteForm] = useState({ email: "", name: "" });
+  const [detailJudge, setDetailJudge] = useState<{ judge: Judge; assignments: JudgeAssignmentDetail[]; avgScore: number | null } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -110,22 +112,38 @@ export default function JudgesPage() {
   };
 
   const handleAutoAssign = async () => {
-    if (!selectedRound || !id) {
-      toast.error("Please select a round first");
-      return;
-    }
+    if (!id) return;
     setAutoAssigning(true);
     try {
-      const result = await autoAssignJudges(selectedRound, 2);
-      if (result.success) {
-        toast.success(`Auto-assigned judges to all teams!`);
-        const updated = await listJudges(id);
-        setJudges(updated);
-      }
+      const result = await autoAssignJudges(id, 2);
+      toast.success(result.message || "Auto-assigned judges — review in Approvals.");
+      const updated = await listJudges(id);
+      setJudges(updated);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Auto-assign failed");
     } finally {
       setAutoAssigning(false);
+    }
+  };
+
+  const openJudgeDetail = async (j: Judge) => {
+    if (!id) return;
+    setDetailLoading(true);
+    setDetailJudge({ judge: j, assignments: [], avgScore: null });
+    try {
+      const assgns = await getJudgeAssignments(id, j.id).catch(() => [] as JudgeAssignmentDetail[]);
+      const evalScores: number[] = [];
+      for (const a of assgns.filter((a) => a.already_evaluated && a.submission_id)) {
+        const evals = await getEvaluations(a.submission_id!).catch(() => []);
+        const mine = evals.find((e) => e.judge_id === j.id);
+        if (mine) evalScores.push(mine.total_score ?? mine.score ?? 0);
+      }
+      const avg = evalScores.length > 0 ? Math.round(evalScores.reduce((a, b) => a + b, 0) / evalScores.length) : null;
+      setDetailJudge({ judge: j, assignments: assgns, avgScore: avg });
+    } catch {
+      // keep partial
+    } finally {
+      setDetailLoading(false);
     }
   };
 
@@ -326,28 +344,17 @@ export default function JudgesPage() {
               >
                 <UserCheck size={20} />
               </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p
-                  style={{
-                    fontWeight: 500,
-                    color: "#fff",
-                    margin: 0,
-                  }}
-                >
+              <button
+                onClick={() => openJudgeDetail(j)}
+                style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }}
+              >
+                <p style={{ fontWeight: 500, color: "#fff", margin: 0, textDecoration: "underline", textDecorationColor: "rgba(255,255,255,0.15)", textUnderlineOffset: "2px" }}>
                   {j.name || j.email}
                 </p>
                 {j.email && (
-                  <p
-                    style={{
-                      fontSize: "0.75rem",
-                      color: "rgba(255,255,255,0.4)",
-                      margin: 0,
-                    }}
-                  >
-                    {j.email}
-                  </p>
+                  <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>{j.email}</p>
                 )}
-              </div>
+              </button>
               {j.institution && (
                 <span
                   style={{
@@ -385,6 +392,79 @@ export default function JudgesPage() {
           ))}
         </div>
       )}
+
+      {/* Judge detail modal */}
+      <Modal open={!!detailJudge} onClose={() => setDetailJudge(null)} title={detailJudge ? `Judge: ${detailJudge.judge.name || detailJudge.judge.email}` : ""} size="lg">
+        {detailJudge && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+            <div style={{ padding: "1rem", borderRadius: "0.5rem", background: "#0d0d0d" }}>
+              <p style={{ fontSize: "0.875rem", color: "#fff", fontWeight: 600, margin: "0 0 0.25rem" }}>{detailJudge.judge.email}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.5)", marginTop: "0.5rem" }}>
+                {detailJudge.judge.institution && <span>Institution: {detailJudge.judge.institution}</span>}
+              </div>
+              {(detailJudge.judge.expertise ?? []).length > 0 && (
+                <div style={{ marginTop: "0.5rem", display: "flex", flexWrap: "wrap", gap: "0.375rem" }}>
+                  {(detailJudge.judge.expertise ?? []).map((e) => (
+                    <span key={e} style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem", borderRadius: "9999px", background: "rgba(168,85,247,0.15)", color: "#c084fc" }}>{e}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Eval stats */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.75rem" }}>
+              {[
+                { label: "Assigned", value: detailJudge.assignments.length },
+                { label: "Completed", value: detailJudge.assignments.filter((a) => a.already_evaluated).length },
+                { label: "Avg Score Given", value: detailJudge.avgScore !== null ? `${detailJudge.avgScore}` : "—" },
+              ].map(({ label, value }) => (
+                <div key={label} style={{ padding: "0.75rem", borderRadius: "0.5rem", background: "#0d0d0d", textAlign: "center" }}>
+                  <p style={{ fontSize: "1.25rem", fontWeight: 700, color: "#e8503a", margin: 0 }}>{value}</p>
+                  <p style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>{label}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Judge log */}
+            <div>
+              <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.5rem" }}>Judge Log</p>
+              {detailLoading ? (
+                <div className="shimmer" style={{ height: "4rem", borderRadius: "0.375rem" }} />
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  {detailJudge.judge.created_at && (
+                    <div style={{ display: "flex", gap: "0.75rem" }}>
+                      <div style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#e8503a", flexShrink: 0, marginTop: "0.3rem" }} />
+                      <div>
+                        <p style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", margin: 0 }}>Invited as judge</p>
+                        <p style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.35)", margin: 0 }}>{new Date(detailJudge.judge.created_at).toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}</p>
+                      </div>
+                    </div>
+                  )}
+                  {detailJudge.assignments
+                    .filter((a) => a.already_evaluated)
+                    .map((a) => (
+                      <div key={a.assignment_id} style={{ display: "flex", gap: "0.75rem" }}>
+                        <div style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#4ade80", flexShrink: 0, marginTop: "0.3rem" }} />
+                        <p style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", margin: 0 }}>
+                          Evaluated {a.team_name} — {a.round_name}
+                        </p>
+                      </div>
+                    ))}
+                  {detailJudge.assignments.length > 0 && (
+                    <div style={{ display: "flex", gap: "0.75rem" }}>
+                      <div style={{ width: "8px", height: "8px", borderRadius: "9999px", background: "#6366f1", flexShrink: 0, marginTop: "0.3rem" }} />
+                      <p style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", margin: 0 }}>
+                        Assigned to {detailJudge.assignments.length} team{detailJudge.assignments.length !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={inviteModalOpen}

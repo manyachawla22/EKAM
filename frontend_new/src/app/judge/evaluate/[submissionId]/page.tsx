@@ -3,9 +3,9 @@
 export const dynamic = "force-dynamic";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { ArrowLeft, Star, CheckCircle } from "lucide-react";
+import { ArrowLeft, Star, CheckCircle, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { getEvaluations, submitEvaluation, getMe } from "@/lib/api";
 import type { Evaluation } from "@/types";
@@ -16,6 +16,12 @@ import Navbar from "@/components/layout/Navbar";
 export default function EvaluatePage() {
   const { submissionId } = useParams<{ submissionId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const teamName = searchParams.get("team") ?? "";
+  const roundName = searchParams.get("round") ?? "";
+  const attachmentsParam = searchParams.get("attachments") ?? "";
+  const attachmentUrls = attachmentsParam ? attachmentsParam.split(",").filter(Boolean) : [];
+
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitted, setSubmitted] = useState(false);
@@ -139,7 +145,7 @@ export default function EvaluatePage() {
               }}
             >
               <Star size={24} color="#e8503a" />
-              Evaluate Submission
+              {teamName ? `Evaluate: ${teamName}` : "Evaluate Submission"}
             </h1>
             <p
               style={{
@@ -148,9 +154,40 @@ export default function EvaluatePage() {
                 color: "rgba(255,255,255,0.4)",
               }}
             >
+              {roundName && <>{roundName} · </>}
               Submission #{String(submissionId).slice(0, 8)}
             </p>
           </div>
+
+          {/* Project links */}
+          {attachmentUrls.length > 0 && (
+            <div
+              style={{
+                borderRadius: "0.75rem",
+                border: "1px solid #222",
+                background: "#111",
+                padding: "1.25rem",
+              }}
+            >
+              <p style={{ fontSize: "0.75rem", fontWeight: 600, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.75rem" }}>
+                Project Links
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {attachmentUrls.map((url, i) => (
+                  <a
+                    key={i}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", fontSize: "0.875rem", color: "#6366f1", textDecoration: "none" }}
+                  >
+                    <ExternalLink size={14} />
+                    {url.length > 60 ? url.slice(0, 60) + "…" : url}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
 
           {loading ? (
             <div

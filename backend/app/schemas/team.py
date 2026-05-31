@@ -75,3 +75,31 @@ class TeamResponse(TeamBase):
 
 Team = TeamResponse
 TeamMember = TeamMemberResponse
+
+
+# -------------------- TEAM PREFERENCE --------------------
+
+class TeamPreferenceCreate(BaseModel):
+    preferred_name: str
+    preferred_theme_id: Optional[UUID] = None
+
+
+class TeamPreferenceResponse(BaseModel):
+    id: UUID
+    team_id: UUID
+    participant_id: UUID
+    preferred_name: str
+    preferred_theme_id: Optional[UUID] = None
+    submitted_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+TeamPreference = TeamPreferenceResponse
+
+
+# -------------------- TEAM THEME UPDATE --------------------
+
+class TeamThemeUpdate(BaseModel):
+    theme_id: Optional[UUID] = None

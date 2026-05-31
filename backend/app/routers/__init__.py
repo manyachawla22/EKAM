@@ -19,6 +19,7 @@ from .notifications import router as notifications_router
 from .anomalies import router as anomalies_router
 from .pipeline import router as pipeline_router
 from .test_email import router as test_email_router
+from .themes import router as themes_router
 
 api_router = APIRouter()
 # Each router defines its own prefix internally (e.g. APIRouter(prefix="/auth")).
@@ -43,4 +44,5 @@ api_router.include_router(notifications_router)
 api_router.include_router(anomalies_router)
 api_router.include_router(pipeline_router)
 api_router.include_router(test_email_router)
+api_router.include_router(themes_router)
 
