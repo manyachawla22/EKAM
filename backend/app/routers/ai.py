@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import os
 import re
@@ -9,10 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import groq as _groq
 from groq import Groq
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.utils import generate_event_hash
+from app.services.csv_service import parse_participant_csv, parse_judge_csv
 
 router = APIRouter()
 
@@ -70,31 +71,29 @@ OUTPUT SCHEMA (include only present fields):
     "registration": {{"opens_at":"ISO8601+05:30","closes_at":"ISO8601+05:30"}},
     "key_dates": [{{"name":"Event Start","date":"ISO8601+05:30","description":""}}]
   }},
-  "participants": {
-  "model": "individual|teams",
-  "individual_registration_allowed": true,
-  "auto_team_matching_allowed": false,
-
-  "team_matching": {
-    "enabled": true,
-    "constraints": [
-      {
-        "type": "gender_diversity",
-        "min_per_team": 1
-      },
-      {
-        "type": "avoid_same_college"
-      },
-      {
-        "type": "balance_experience"
-      }
-    ]
-  },
-
-  "team": {"min_size":4,"max_size":4},
-  "capacity": {"max_teams":50},
-  "eligibility": {"open_to":["students"]}
-}
+  "participants": {{
+    "model": "individual|teams",
+    "individual_registration_allowed": true,
+    "auto_team_matching_allowed": false,
+    "team_matching": {{
+      "enabled": true,
+      "constraints": [
+        {{
+          "type": "gender_diversity",
+          "min_per_team": 1
+        }},
+        {{
+          "type": "avoid_same_college"
+        }},
+        {{
+          "type": "balance_experience"
+        }}
+      ]
+    }},
+    "team": {{"min_size":4,"max_size":4}},
+    "capacity": {{"max_teams":50}},
+    "eligibility": {{"open_to":["students"]}}
+  }}
 }}"""
 
 
@@ -110,7 +109,8 @@ ROUND TYPE MAPPING:
   offline hack / live coding → "coding"
   final presentation / live pitch / demo day → "live_presentation"
 
-Scoring weights MUST sum to 100. max_score = weight, min_score = 0.
+If scoring criteria ARE mentioned, weights MUST sum to 100 and max_score = weight, min_score = 0.
+If scoring criteria are NOT mentioned, omit the scoring.criteria array entirely — still extract the round name, type, and dates.
 Last round must have "is_final_round": true.
 
 OUTPUT SCHEMA:
@@ -148,6 +148,8 @@ def _sec3_system() -> str:
 Return ONLY valid JSON — no markdown, no prose.
 Include ONLY fields you can confidently extract. Omit unknown fields entirely.
 
+CRITICAL: If the message contains NO prize, award, or cash information, return {} — do NOT invent, assume, or placeholder prize values.
+
 total_pool = sum of ALL prize amounts (distribution + special awards).
 
 OUTPUT SCHEMA:
@@ -181,6 +183,9 @@ Today = {today}, timezone = Asia/Kolkata (+05:30).
 
 DATE MATH: "in N days" = {today} + N days | "today/now" = {today}T00:00:00+05:30
 
+The context will say "Field: <key>" — extract ONLY that field and wrap it in the correct top-level key.
+
+EXAMPLES:
 You will be told which field is being answered. Extract ONLY that field and return
 the matching JSON structure. For example:
 
@@ -188,9 +193,18 @@ Field: venue → reply "IIT Delhi, Delhi" → {{"core":{{"venue":{{"name":"IIT D
 Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"email":"abc@gmail.com","phone":"9876543210"}}}}}}
 Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
 Field: teams → reply "50 teams 4 each" → {{"participants":{{"capacity":{{"max_teams":50}},"team":{{"min_size":4,"max_size":4}}}}}}
-Field: rounds → extract full rounds array with scoring, deliverables, advancement.
-Field: judges → extract judging_panel.judges array.
-Field: prizes → extract full prizes object."""
+Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
+Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
+Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
+{{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
+Field: tracks → reply "AI, Web3, Climate Tech" → {{"core":{{"tracks":[{{"track_id":"t1","name":"AI","description":""}},{{"track_id":"t2","name":"Web3","description":""}},{{"track_id":"t3","name":"Climate Tech","description":""}}]}}}}
+Field: team_constraints → reply "at least 1 girl per team, members from different colleges" → {{"participants":{{"team_formation_constraints":"at least 1 girl per team, members from different colleges"}}}}
+
+PRIZE RULES:
+- Convert shorthand amounts: "10k"→"₹10,000", "1L"/"1,00,000"→"₹1,00,000", "5000"→"₹5,000"
+- total_pool = sum of ALL prizes given. If only distribution given, sum them.
+- Always wrap inside {{"prizes": {{...}}}} — never return prizes fields at the top level.
+- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}"""
 
 
 # ── Skip detection ─────────────────────────────────────────────────────────────
@@ -220,6 +234,10 @@ def _question_to_field_key(question: str) -> Optional[str]:
         return "contact"
     if "registration" in q:
         return "registration"
+    if "team formation constraint" in q or "constraint" in q:
+        return "team_constraints"
+    if "track" in q:
+        return "tracks"
     if "team" in q:
         return "teams"
     if "round" in q:
@@ -232,6 +250,39 @@ def _question_to_field_key(question: str) -> Optional[str]:
 
 
 # ── What's still needed ────────────────────────────────────────────────────────
+
+_FAKE_POOL_VALUES = {
+    "", "tbd", "n/a", "na", "not mentioned", "not specified",
+    "none", "no prizes", "₹0", "$0", "0", "unknown", "nil", "null",
+}
+
+
+def _sum_prize_distribution(distribution: list) -> str:
+    """Sum prize amounts from distribution list and return formatted string, or '' on failure."""
+    total = 0
+    for entry in distribution:
+        if not isinstance(entry, dict):
+            continue
+        raw = str(entry.get("amount", "")).replace(",", "").replace("₹", "").replace("$", "").strip()
+        raw = re.sub(r"[^\d.]", "", raw)
+        try:
+            total += int(float(raw))
+        except (ValueError, TypeError):
+            return ""
+    return f"₹{total:,}" if total else ""
+
+
+def _prize_pool_missing(cfg: dict) -> bool:
+    """Return True when total_pool is absent, empty, or a hallucinated placeholder."""
+    total_pool = (cfg.get("prizes") or {}).get("total_pool", "")
+    if not total_pool:
+        return True
+    normalized = str(total_pool).strip().lower()
+    if normalized in _FAKE_POOL_VALUES:
+        return True
+    # A real prize value must contain at least one digit
+    return not any(c.isdigit() for c in normalized)
+
 
 _PLACEHOLDER_NAMES = {
     "judge 1", "judge 2", "judge 3", "judge 4", "judge 5",
@@ -263,6 +314,8 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
          "name", "What is the name of the event?"),
         (not core.get("theme"),
          "theme", "What is the theme or focus area of the event?"),
+        (not core.get("tracks"),
+         "tracks", "What are the tracks or themes participants can compete under? (e.g. AI/ML, Web3, Climate Tech — skip if not applicable)"),
         (not core.get("mode"),
          "mode", "Will this be online, offline, or hybrid?"),
         (core.get("mode") in ("offline", "hybrid") and not core.get("venue", {}).get("city"),
@@ -274,11 +327,13 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
         (not cfg.get("participants", {}).get("team", {}).get("min_size")
          and not cfg.get("participants", {}).get("capacity", {}).get("max_teams"),
          "teams", "How many teams can participate, and what is the team size?"),
+        (not cfg.get("participants", {}).get("team_formation_constraints"),
+         "team_constraints", "Any team formation constraints? (e.g. 'at least 1 girl per team', 'members from different colleges' — skip if none)"),
         (not cfg.get("rounds"),
          "rounds", "Describe the rounds — names, types, and scoring criteria with weights."),
         (not _has_real_judges(cfg),
          "judges", "Tell me about the judges — names, companies, and areas of expertise."),
-        (not cfg.get("prizes", {}).get("total_pool"),
+        (_prize_pool_missing(cfg),
          "prizes", "What is the prize pool and how is it distributed?"),
     ]
 
@@ -298,13 +353,6 @@ def _data_dir() -> str:
     )
 
 
-_HASH_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-
-def _make_short_hash(event_id: str) -> str:
-    """Derive a short EF-XXXXXX display hash from the event UUID."""
-    digest = hashlib.sha256(event_id.encode()).digest()
-    return "EF-" + "".join(_HASH_CHARSET[b % 36] for b in digest[:6])
 
 
 def _load_index() -> list:
@@ -337,6 +385,34 @@ def _save_config(event_id: str, config: dict) -> str:
     with open(path, "w") as f:
         json.dump(config, f, indent=2, default=str)
     return path
+
+
+# ── Roster (participants / judges) file storage ─────────────────────────────────
+# Deployed events live as JSON files keyed by event_id (see _save_config), not in
+# the SQL events table. Their participant/judge rosters are stored the same way so
+# CSV upload and listing work without a DB-side event row.
+
+def _event_exists(event_id: str) -> bool:
+    return os.path.exists(os.path.join(_data_dir(), event_id, "event.json"))
+
+
+def _roster_path(event_id: str, kind: str) -> str:
+    return os.path.join(_data_dir(), event_id, f"{kind}.json")
+
+
+def _load_roster(event_id: str, kind: str) -> list:
+    path = _roster_path(event_id, kind)
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
+
+
+def _save_roster(event_id: str, kind: str, items: list) -> None:
+    dirpath = os.path.join(_data_dir(), event_id)
+    os.makedirs(dirpath, exist_ok=True)
+    with open(_roster_path(event_id, kind), "w") as f:
+        json.dump(items, f, indent=2, default=str)
 
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
@@ -495,6 +571,7 @@ def _enrich_config(config: dict) -> dict:
         config["core"] = {}
     core = config["core"]
     core.setdefault("tagline", "")
+    core.setdefault("tracks", [])
     core.setdefault("cover_image_url", "")
     core.setdefault("language", "English")
     venue = core.setdefault("venue", {})
@@ -539,17 +616,17 @@ def _enrich_config(config: dict) -> dict:
     eligibility.setdefault("age_min", None)
     eligibility.setdefault("age_max", None)
     eligibility.setdefault("additional_criteria", "")
+    participants.setdefault("team_formation_constraints", "")
     participants.setdefault("registration_form_fields", [
-    {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
-    {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
-    {"field_id": "phone", "label": "WhatsApp Number", "type": "tel", "required": True},
-    {"field_id": "college", "label": "College/University", "type": "text", "required": True},
-    {"field_id": "year_of_study", "label": "Year of Study", "type": "select", "required": True,
-     "options": ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "PG", "PhD"]},
-    {"field_id": "branch", "label": "Branch/Specialization", "type": "text", "required": False},
-    {"field_id": "linkedin_url", "label": "LinkedIn Profile", "type": "url", "required": False},
+        {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
+        {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
+        {"field_id": "phone", "label": "WhatsApp Number", "type": "tel", "required": True},
+        {"field_id": "college", "label": "College/University", "type": "text", "required": True},
+        {"field_id": "year_of_study", "label": "Year of Study", "type": "select", "required": True,
+         "options": ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "PG", "PhD"]},
+        {"field_id": "branch", "label": "Branch/Specialization", "type": "text", "required": False},
+        {"field_id": "linkedin_url", "label": "LinkedIn Profile", "type": "url", "required": False},
     ])
-
     participants.setdefault("team_matching", {
         "enabled": False,
         "constraints": []
@@ -812,10 +889,12 @@ async def chat(request: ChatRequest):
 
     else:
         # Targeted single-model extraction for the specific field being answered
+        field_key = _question_to_field_key(next_q) or "unknown"
         context = (
-            f"FIELD BEING ANSWERED: {next_q}\n\n"
-            f"CURRENT CONFIG:\n{json.dumps(_compact_config(config), default=str)}\n\n"
-            f"USER REPLY: {user_reply}"
+            f"Field: {field_key}\n"
+            f"Question asked: {next_q}\n\n"
+            f"Current config:\n{json.dumps(_compact_config(config), default=str)}\n\n"
+            f"User reply: {user_reply}"
         )
         try:
             result, model_used = await asyncio.to_thread(
@@ -843,6 +922,22 @@ async def chat(request: ChatRequest):
             mv = user_reply.lower().strip()
             if mv in ("online", "offline", "hybrid"):
                 updates = _deep_merge(updates, {"core": {"mode": mv}})
+
+        # Prize safety net: if AI put prizes fields at wrong nesting level, fix it
+        if field_key == "prizes":
+            prize_updates = updates.get("prizes", {})
+            # If AI returned top-level total_pool instead of wrapping in prizes key
+            if not prize_updates.get("total_pool") and updates.get("total_pool"):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": updates.pop("total_pool")}})
+            # If AI still didn't set total_pool but gave distribution, compute total from it
+            prize_updates = updates.get("prizes", {})
+            if not prize_updates.get("total_pool") and isinstance(prize_updates.get("distribution"), list):
+                total = _sum_prize_distribution(prize_updates["distribution"])
+                if total:
+                    updates = _deep_merge(updates, {"prizes": {"total_pool": total}})
+            # Last resort: if AI produced nothing useful, store raw reply so question moves forward
+            if _prize_pool_missing({"prizes": updates.get("prizes", {})}):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": user_reply.strip()}})
 
     # ── Merge updates into config ─────────────────────────────────────────────
     if updates:
@@ -880,7 +975,7 @@ async def deploy_event(request: SaveConfigRequest):
     event_id = request.event_id or config.get("event_id") or str(uuid.uuid4())
     config["event_id"] = event_id
 
-    short_hash = _make_short_hash(event_id)
+    short_hash = generate_event_hash(event_id)
     config["hash"] = short_hash
 
     now_iso = datetime.utcnow().isoformat() + "Z"
@@ -925,6 +1020,157 @@ async def get_deployed_event(hash: str):
     if not entry:
         raise HTTPException(status_code=404, detail="Event not found")
     return _load_config(entry["event_id"])
+
+
+# ── Per-event roster endpoints (by event_id) ────────────────────────────────────
+# These use a two-segment path (/events/{event_id}/...) so they never collide with
+# the single-segment /events/{hash} lookup above.
+
+class ParticipantEntry(BaseModel):
+    name: str
+    email: str
+    institution: Optional[str] = ""
+    skills: Optional[List[str]] = None
+
+
+class JudgeEntry(BaseModel):
+    name: str
+    email: str
+    institution: Optional[str] = ""
+    expertise: Optional[List[str]] = None
+
+
+def _require_event(event_id: str) -> None:
+    if not _event_exists(event_id):
+        raise HTTPException(status_code=404, detail="Event not found")
+
+
+@router.get("/events/{event_id}/detail")
+async def get_event_detail(event_id: str):
+    _require_event(event_id)
+    return _load_config(event_id)
+
+
+@router.get("/events/{event_id}/participants")
+async def list_event_participants(event_id: str):
+    _require_event(event_id)
+    return _load_roster(event_id, "participants")
+
+
+@router.post("/events/{event_id}/participants")
+async def add_event_participant(event_id: str, entry: ParticipantEntry):
+    _require_event(event_id)
+    roster = _load_roster(event_id, "participants")
+    if any((p.get("email") or "").lower() == entry.email.lower() for p in roster):
+        raise HTTPException(status_code=409, detail="A participant with this email already exists")
+    roster.append({
+        "id": str(uuid.uuid4()),
+        "name": entry.name,
+        "email": entry.email,
+        "institution": entry.institution or "",
+        "skills": entry.skills or [],
+        "registration_status": "pending",
+    })
+    _save_roster(event_id, "participants", roster)
+    return roster[-1]
+
+
+@router.post("/events/{event_id}/participants/upload-csv")
+async def upload_event_participants_csv(event_id: str, file: UploadFile = File(...)):
+    _require_event(event_id)
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    rows = parse_participant_csv(content)
+
+    roster = _load_roster(event_id, "participants")
+    seen = {(p.get("email") or "").lower() for p in roster}
+    added = 0
+    for r in rows:
+        email = (r.get("email") or "").lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": r.get("name", ""),
+            "email": r.get("email", ""),
+            "institution": r.get("organization") or "",
+            "skills": r.get("skills") or [],
+            "registration_status": "pending",
+        })
+        added += 1
+
+    _save_roster(event_id, "participants", roster)
+    return {
+        "message": f"Imported {added} participant(s)"
+        + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
+        "count": added,
+        "total": len(roster),
+        "participants": roster,
+    }
+
+
+@router.get("/events/{event_id}/judges")
+async def list_event_judges(event_id: str):
+    _require_event(event_id)
+    return _load_roster(event_id, "judges")
+
+
+@router.post("/events/{event_id}/judges")
+async def add_event_judge(event_id: str, entry: JudgeEntry):
+    _require_event(event_id)
+    roster = _load_roster(event_id, "judges")
+    if any((j.get("email") or "").lower() == entry.email.lower() for j in roster):
+        raise HTTPException(status_code=409, detail="A judge with this email already exists")
+    roster.append({
+        "id": str(uuid.uuid4()),
+        "name": entry.name,
+        "email": entry.email,
+        "institution": entry.institution or "",
+        "expertise": entry.expertise or [],
+        "rating": 5.0,
+    })
+    _save_roster(event_id, "judges", roster)
+    return roster[-1]
+
+
+@router.post("/events/{event_id}/judges/upload-csv")
+async def upload_event_judges_csv(event_id: str, file: UploadFile = File(...)):
+    _require_event(event_id)
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a CSV")
+
+    content = await file.read()
+    rows = parse_judge_csv(content)
+
+    roster = _load_roster(event_id, "judges")
+    seen = {(j.get("email") or "").lower() for j in roster}
+    added = 0
+    for r in rows:
+        email = (r.get("email") or "").lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": r.get("name", ""),
+            "email": r.get("email", ""),
+            "institution": r.get("organization") or "",
+            "expertise": r.get("expertise") or [],
+            "rating": 5.0,
+        })
+        added += 1
+
+    _save_roster(event_id, "judges", roster)
+    return {
+        "message": f"Imported {added} judge(s)"
+        + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
+        "count": added,
+        "total": len(roster),
+        "judges": roster,
+    }
 
 
 @router.post("/save-config")

@@ -1,57 +1,50 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
+
 from app.models.participant import RegistrationStatus
 
+
 class ParticipantBase(BaseModel):
+    name: str
+    email: EmailStr
+
     institution: Optional[str] = None
-    skills: List[str] = []
-    gender: Optional[str] = None
-    age: Optional[int] = None
     phone: Optional[str] = None
 
+    gender: Optional[str] = None
+    age: Optional[int] = None
+
+    skills: List[str] = []
+
+
 class ParticipantCreate(ParticipantBase):
-    user_id: UUID
     event_id: UUID
 
-class Participant(ParticipantBase):
+
+class ParticipantUpdate(BaseModel):
+    institution: Optional[str] = None
+    phone: Optional[str] = None
+    skills: Optional[List[str]] = None
+
+
+class ParticipantResponse(ParticipantBase):
     id: UUID
-    user_id: UUID
+
     event_id: UUID
-    ats_score: Optional[float] = None
+
+    ats_score: Optional[float]
+
     status: RegistrationStatus
+
+    is_verified: bool
+
+    last_login: Optional[datetime]
+
     created_at: datetime
 
     class Config:
         from_attributes = True
 
-class TeamBase(BaseModel):
-    name: str
-
-class TeamCreate(TeamBase):
-    event_id: UUID
-
-class Team(TeamBase):
-    id: UUID
-    event_id: UUID
-    created_at: datetime
-
-    class Config:
-        from_attributes = True
-
-class TeamMemberBase(BaseModel):
-    is_leader: int = 0
-
-class TeamMemberCreate(TeamMemberBase):
-    team_id: UUID
-    participant_id: UUID
-
-class TeamMember(TeamMemberBase):
-    id: UUID
-    team_id: UUID
-    participant_id: UUID
-    joined_at: datetime
-
-    class Config:
-        from_attributes = True
+Participant = ParticipantResponse

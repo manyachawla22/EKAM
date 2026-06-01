@@ -1,43 +1,88 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from typing import List
+"""
+EKAM Rounds Router
+"""
+
 from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.middleware.auth import require_role, get_current_user
-from app.models.user import User, UserRole
-from app.models.event import Round, Event
-from app.schemas.event import Round as RoundSchema, RoundCreate
 
-router = APIRouter()
+from app.middleware.auth import require_actor_type, require_event_access
+from app.core.auth_context import AuthContext
 
-@router.post("/create", response_model=RoundSchema, status_code=status.HTTP_201_CREATED)
+from app.schemas.round import (
+    Round,
+    RoundCreate
+)
+
+from app.services.round_service import (
+    create_round_service,
+    list_rounds_service,
+    delete_round_service,
+)
+
+router = APIRouter(
+    prefix="/rounds",
+    tags=["Rounds"]
+)
+
+
+@router.post(
+    "/create",
+    response_model=Round,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
+)
 async def create_round(
     round_in: RoundCreate,
-    current_user: User = Depends(require_role([UserRole.organizer])),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
-    # Verify event belongs to organizer
-    event_result = await db.execute(select(Event).where(Event.id == round_in.event_id))
-    event = event_result.scalars().first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
+    """Create a new round."""
+    if not auth.can_access_event(str(round_in.event_id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No event access"
+        )
         
-    if event.organizer_id != current_user.id and current_user.role != UserRole.admin:
-        raise HTTPException(status_code=403, detail="Not authorized to create rounds for this event")
+    return await create_round_service(
+        db,
+        round_in,
+        auth.entity
+    )
 
-    new_round = Round(**round_in.model_dump())
-    db.add(new_round)
-    await db.commit()
-    await db.refresh(new_round)
-    return new_round
 
-@router.get("/{event_id}", response_model=List[RoundSchema])
+@router.get(
+    "/{event_id}",
+    response_model=List[Round],
+    dependencies=[
+        Depends(require_actor_type(["organizer", "judge", "participant"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
 async def list_rounds(
     event_id: UUID,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(Round).where(Round.event_id == event_id))
-    return result.scalars().all()
+    """List all rounds for an event."""
+    return await list_rounds_service(db, event_id)
+
+
+@router.delete(
+    "/{event_id}/{round_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def delete_round(
+    event_id: UUID,
+    round_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a round."""
+    await delete_round_service(db, event_id, round_id)

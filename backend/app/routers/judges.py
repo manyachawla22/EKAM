@@ -1,230 +1,337 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+"""
+EKAM Judges Router
+"""
+
+from uuid import UUID
+from typing import List
+
+from fastapi import APIRouter, Depends, status, UploadFile, File, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import List
-from uuid import UUID
 
 from app.core.database import get_db
-from app.middleware.auth import require_role
+from app.core.auth_context import AuthContext
+from app.middleware.auth import require_actor_type, require_event_access
+from app.core.config import settings
 
-from app.models.user import User, UserRole
-from app.models.judge import Judge, JudgeAssignment
-from app.models.participant import Team
-from app.models.theme import Theme
+from app.models.judge import Judge as JudgeModel
+from app.models.event import Event as EventModel
 
 from app.schemas.judge import (
-    JudgeAssignmentResponse,
-    JudgeAssignmentCreate
+    Judge,
+    JudgeCreate,
+    JudgeAssignment,
+    JudgeAssignmentCreate,
+    JudgeAssignmentDetail,
+    JudgeInviteDetail,
+    JudgeInviteRespond,
 )
 
-from app.judge_assignment.optimizer import assign_judges
+from app.services.judge_service import (
+    create_judge_service,
+    list_judges_service,
+    get_judge_assignments_detail,
+)
+from app.services.assignment_service import (
+    assign_single_judge_service,
+    propose_judge_assignment
+)
+from app.services.csv_service import parse_judge_csv, bulk_insert_judges
+from app.services.email_service import send_judge_invite_email
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/judges",
+    tags=["Judges"]
+)
+
+
+# ─── Invite endpoints (no auth — judge hasn't logged in yet) ─────────────────
+# These must be declared BEFORE the /{event_id} routes so FastAPI doesn't try
+# to parse "invite" as a UUID.
+
+@router.get(
+    "/invite/{token}",
+    response_model=JudgeInviteDetail,
+)
+async def get_invite_details(
+    token: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return invite metadata so the frontend can show the accept/decline page."""
+    result = await db.execute(
+        select(JudgeModel).where(JudgeModel.invite_token == token)
+    )
+    judge = result.scalars().first()
+    if not judge:
+        raise HTTPException(status_code=404, detail="Invite link is invalid or has expired.")
+
+    event_result = await db.execute(
+        select(EventModel).where(EventModel.id == judge.event_id)
+    )
+    event = event_result.scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found.")
+
+    return JudgeInviteDetail(
+        judge_name=judge.name,
+        judge_email=judge.email,
+        event_name=event.name,
+        event_hash=event.hash,
+        invite_status=judge.invite_status,
+    )
 
 
 @router.post(
+    "/invite/respond",
+    response_model=JudgeInviteDetail,
+)
+async def respond_to_invite(
+    body: JudgeInviteRespond,
+    db: AsyncSession = Depends(get_db),
+):
+    """Accept or decline a judge invitation."""
+    result = await db.execute(
+        select(JudgeModel).where(JudgeModel.invite_token == body.token)
+    )
+    judge = result.scalars().first()
+    if not judge:
+        raise HTTPException(status_code=404, detail="Invite link is invalid or has expired.")
+
+    if judge.invite_status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"This invitation has already been {judge.invite_status}."
+        )
+
+    event_result = await db.execute(
+        select(EventModel).where(EventModel.id == judge.event_id)
+    )
+    event = event_result.scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found.")
+
+    judge.invite_status = "accepted" if body.accepted else "declined"
+    if body.accepted:
+        judge.is_verified = True
+    await db.commit()
+    await db.refresh(judge)
+
+    return JudgeInviteDetail(
+        judge_name=judge.name,
+        judge_email=judge.email,
+        event_name=event.name,
+        event_hash=event.hash,
+        invite_status=judge.invite_status,
+    )
+
+
+# ─── CSV bulk import ──────────────────────────────────────────────────────────
+
+@router.post(
+    "/{event_id}/upload-csv",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def upload_judge_csv(
+    event_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """Bulk upload judges via CSV."""
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a CSV"
+        )
+
+    content = await file.read()
+    judges_data = parse_judge_csv(content)
+    count = await bulk_insert_judges(db, event_id, judges_data)
+    return {"message": f"Successfully imported {count} judges", "count": count}
+
+
+# ─── Create single judge (organizer) ─────────────────────────────────────────
+
+@router.post(
+    "/create",
+    response_model=Judge,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
+)
+async def create_judge(
+    judge_in: JudgeCreate,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db)
+):
+    """Register a single judge and send them an invite email."""
+    if not auth.can_access_event(str(judge_in.event_id)):
+        raise HTTPException(status_code=403, detail="No event access")
+
+    judge = await create_judge_service(db, judge_in)
+
+    # Fetch event for email context
+    event_result = await db.execute(
+        select(EventModel).where(EventModel.id == judge_in.event_id)
+    )
+    event = event_result.scalars().first()
+
+    if event and judge.invite_token:
+        invite_link = f"{settings.FRONTEND_URL}/judge/invite?token={judge.invite_token}"
+        await send_judge_invite_email(
+            email=judge.email,
+            judge_name=judge.name,
+            event_name=event.name,
+            event_hash=event.hash,
+            invite_link=invite_link,
+        )
+
+    return judge
+
+
+# ─── Judge-specific: assignments by event ────────────────────────────────────
+
+@router.get(
+    "/{event_id}/{judge_id}/assignments",
+    response_model=List[JudgeAssignmentDetail],
+    dependencies=[
+        Depends(require_actor_type(["organizer", "judge"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def get_judge_assignments(
+    event_id: UUID,
+    judge_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a judge's team assignments enriched with submission/evaluation state."""
+    return await get_judge_assignments_detail(db, event_id, judge_id)
+
+
+# ─── Auto-assign ─────────────────────────────────────────────────────────────
+
+@router.post(
+    "/{event_id}/auto-assign",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def auto_assign_judges(
+    event_id: str,
+    judges_per_team: int = 2,
+    max_teams_per_judge: int = 5,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db)
+):
+    """Trigger CP-SAT judge assignment and create a pending ApprovalRequest."""
+    try:
+        approval = await propose_judge_assignment(
+            db=db,
+            event_id=event_id,
+            requested_by=auth.actor_id,
+            judges_per_team=judges_per_team,
+            max_teams_per_judge=max_teams_per_judge
+        )
+        return {"message": "CP-SAT assignment proposed.", "approval_id": str(approval.id)}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Judge assignment failed: {type(e).__name__}: {e}")
+
+
+# ─── Manual assign ────────────────────────────────────────────────────────────
+
+@router.post(
     "/assign",
-    response_model=JudgeAssignmentResponse,
-    status_code=status.HTTP_201_CREATED
+    response_model=JudgeAssignment,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def assign_judge(
     assign_in: JudgeAssignmentCreate,
-    current_user: User = Depends(
-        require_role([UserRole.organizer])
-    ),
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
+    """Manually assign a single judge to a team."""
+    return await assign_single_judge_service(db, assign_in)
 
-    existing = await db.execute(
-        select(JudgeAssignment).where(
-            JudgeAssignment.judge_id == assign_in.judge_id,
-            JudgeAssignment.team_id == assign_in.team_id,
-            JudgeAssignment.round_id == assign_in.round_id
-        )
-    )
 
-    if existing.scalars().first():
-
-        raise HTTPException(
-            status_code=400,
-            detail="Judge already assigned to this team"
-        )
-
-    new_assign = JudgeAssignment(
-        **assign_in.model_dump()
-    )
-
-    db.add(new_assign)
-
-    await db.commit()
-
-    await db.refresh(new_assign)
-
-    return new_assign
-
+# ─── List judges ─────────────────────────────────────────────────────────────
 
 @router.get(
-    "/round/{round_id}",
-    response_model=List[JudgeAssignmentResponse]
+    "/{event_id}",
+    response_model=List[Judge],
+    dependencies=[
+        # Judges call this against every event to discover which ones they're
+        # invited to (the dashboard matches by email). Participants are blocked.
+        Depends(require_actor_type(["organizer", "judge"])),
+        Depends(require_event_access("event_id"))
+    ]
 )
-async def list_assignments_for_round(
-    round_id: UUID,
-    current_user: User = Depends(
-        require_role([UserRole.organizer])
-    ),
+async def list_judges(
+    event_id: UUID,
     db: AsyncSession = Depends(get_db)
 ):
+    """List all judges for an event."""
+    return await list_judges_service(db, event_id)
 
+
+# ─── Delete judge ─────────────────────────────────────────────────────────────
+
+@router.delete(
+    "/{event_id}/{judge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def delete_judge(
+    event_id: UUID,
+    judge_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+    """Remove a judge from the event."""
     result = await db.execute(
-        select(JudgeAssignment).where(
-            JudgeAssignment.round_id == round_id
+        select(JudgeModel).where(
+            JudgeModel.id == judge_id,
+            JudgeModel.event_id == event_id
         )
     )
+    judge = result.scalars().first()
+    if not judge:
+        raise HTTPException(status_code=404, detail="Judge not found")
+    await db.delete(judge)
+    await db.commit()
 
-    return result.scalars().all()
 
+# ─── Get single judge ─────────────────────────────────────────────────────────
 
-@router.post("/auto-assign/{round_id}")
-async def auto_assign_judges(
-    round_id: UUID,
-    judges_per_team: int = 2,
-    current_user: User = Depends(
-        require_role([UserRole.organizer])
-    ),
+@router.get(
+    "/{event_id}/{judge_id}",
+    response_model=Judge,
+    dependencies=[
+        Depends(require_actor_type(["organizer", "judge"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def get_judge(
+    event_id: UUID,
+    judge_id: UUID,
     db: AsyncSession = Depends(get_db)
 ):
-
-    # fetch judges
-
-    judge_result = await db.execute(
-        select(Judge)
+    """Get a specific judge by ID."""
+    result = await db.execute(
+        select(JudgeModel).where(
+            JudgeModel.id == judge_id,
+            JudgeModel.event_id == event_id
+        )
     )
-
-    judges = judge_result.scalars().all()
-
-    if not judges:
-
-        raise HTTPException(
-            status_code=400,
-            detail="No judges found"
-        )
-
-    # fetch teams
-
-    team_result = await db.execute(
-        select(Team)
-    )
-
-    teams = team_result.scalars().all()
-
-    if not teams:
-
-        raise HTTPException(
-            status_code=400,
-            detail="No teams found"
-        )
-
-    # prepare judge data
-
-    judge_data = []
-
-    for j in judges:
-
-        judge_data.append({
-
-            "id": str(j.id),
-
-            "name": j.name,
-
-            "expertise": j.expertise or [],
-
-            "institution": j.institution,
-
-            "rating": j.rating
-
-        })
-
-    # prepare team data
-
-    team_data = []
-
-    for t in teams:
-
-        theme_name = None
-        required_skills = []
-
-        if getattr(t, "theme", None):
-
-            theme_name = t.theme.name
-
-            required_skills = (
-                t.theme.required_skills or []
-            )
-
-        team_data.append({
-
-            "id": str(t.id),
-
-            "theme": theme_name,
-
-            "required_skills": required_skills,
-
-            "institution": getattr(
-                t,
-                "institution",
-                None
-            )
-
-        })
-
-    try:
-
-        assignments = assign_judges(
-            judges=judge_data,
-            teams=team_data,
-            judges_per_team=judges_per_team
-        )
-
-        created_assignments = []
-
-        for assignment in assignments:
-
-            db_assignment = JudgeAssignment(
-
-                judge_id=assignment["judge_id"],
-
-                team_id=assignment["team_id"],
-
-                round_id=round_id
-
-            )
-
-            db.add(db_assignment)
-
-            created_assignments.append({
-
-                "judge_id": assignment["judge_id"],
-
-                "team_id": assignment["team_id"]
-
-            })
-
-        await db.commit()
-
-        return {
-
-            "success": True,
-
-            "assignments": created_assignments,
-
-            "message":
-                f"Successfully assigned judges to {len(team_data)} teams"
-
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
+    judge = result.scalars().first()
+    if not judge:
+        raise HTTPException(status_code=404, detail="Judge not found")
+    return judge

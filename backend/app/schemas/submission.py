@@ -1,43 +1,65 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID
 from datetime import datetime
+
 from app.models.submission import SubmissionStatus
+
+
+# -------------------- SUBMISSION --------------------
 
 class SubmissionBase(BaseModel):
     attachments: List[str] = []
+
 
 class SubmissionCreate(SubmissionBase):
     team_id: UUID
     round_id: UUID
 
-class Submission(SubmissionBase):
+
+class SubmissionResponse(SubmissionBase):
     id: UUID
+
     team_id: UUID
     round_id: UUID
+
     status: SubmissionStatus
-    score: Optional[float] = None
-    panel_avg: Optional[float] = None
-    feedback: Optional[str] = None
+
+    final_score: Optional[float]
+    panel_average: Optional[float]
+
     submitted_at: datetime
     updated_at: Optional[datetime]
 
     class Config:
         from_attributes = True
 
+
+# -------------------- EVALUATION --------------------
+
 class EvaluationBase(BaseModel):
-    score: float
+    rubric_scores: Dict[str, float]
     feedback: Optional[str] = None
+
 
 class EvaluationCreate(EvaluationBase):
     submission_id: UUID
     judge_id: UUID
+    total_score: float
 
-class Evaluation(EvaluationBase):
+
+class EvaluationResponse(EvaluationBase):
     id: UUID
+
     submission_id: UUID
     judge_id: UUID
+
+    total_score: float
+
     evaluated_at: datetime
 
     class Config:
         from_attributes = True
+
+Submission = SubmissionResponse
+Evaluation = EvaluationResponse
