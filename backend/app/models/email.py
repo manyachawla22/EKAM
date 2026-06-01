@@ -1,7 +1,6 @@
-
 import uuid
 from datetime import datetime
-
+import enum
 from sqlalchemy import (
     Column,
     String,
@@ -111,5 +110,4 @@ class EmailDraft(Base):
     # Relationships
     event = relationship("Event", backref="email_drafts")
     approval_request = relationship("ApprovalRequest", backref="emails")
->>>>>>> origin/main
-    
+

@@ -11,20 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth_context import AuthContext
 from app.core.database import get_db
 from app.middleware.auth import require_actor_type, require_event_access
-
 from app.schemas.report import Report as ReportSchema, ReportCreate
-
+from app.services.anomaly_service import analyze_evaluation
+from app.services.participant_performance_report_service import (
+    generate_participant_performance_report_service,
+)
 from app.services.report_service import (
     create_report_service,
     list_reports_service,
-)
-
-from app.services.ml_anomaly_report_service import (
-    detect_score_anomalies_service,
-)
-
-from app.services.participant_performance_report_service import (
-    generate_participant_performance_report_service,
 )
 
 router = APIRouter(
@@ -66,13 +60,7 @@ async def detect_anomaly_scores(
     contamination: float = 0.1,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Runs ML-based anomaly detection over judge scores for an event.
-
-    This endpoint creates a report and updates flagged submissions.
-    Keep this organizer-only because it mutates submission statuses.
-    """
-    return await detect_score_anomalies_service(
+    return await analyze_evaluation(
         db=db,
         event_id=event_id,
         contamination=contamination,
@@ -91,11 +79,6 @@ async def generate_participant_performance_report(
     auth: AuthContext = Depends(require_actor_type(["organizer", "participant"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Generates a personalized participant performance report.
-    Organizers can generate for any participant in the event.
-    Participants can generate only their own report.
-    """
     return await generate_participant_performance_report_service(
         db=db,
         event_id=event_id,

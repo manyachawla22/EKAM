@@ -1,5 +1,8 @@
 from ortools.sat.python import cp_model
-from app.judge_assignment.scorer import calculate_match_score
+
+from app.judge_assignment.scorer import (
+    calculate_match_score
+)
 
 
 def assign_judges(

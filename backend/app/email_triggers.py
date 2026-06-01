@@ -1,518 +1,862 @@
-# backend/app/team_formation/email_triggers.py
+import asyncio
+import json
+from typing import Any
 
-from google import genai
+from groq import Groq
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import Dict, Optional
-from datetime import datetime
-import json
-import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
 
-import groq
-from groq import Groq
-
+from app.certificate import generate_certificate_html, send_email_smtp
+from app.core.config import settings
 from app.models.email import EmailType
 from app.models.event import Event, EventStage
+from app.models.judge import Judge, JudgeAssignment
 from app.models.participant import Participant
-from app.models.user import User
 from app.services.email_service import draft_bulk_emails
 
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+
+# ---------------------------------------------------------------------
+# SMALL HELPERS
+# ---------------------------------------------------------------------
 
 
-# ΓöÇΓöÇΓöÇ GEMINI CONTENT DRAFTING ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+def _settings_value(*names: str, default: Any = None) -> Any:
+    """
+    Safely read config values even if config.py uses uppercase or lowercase names.
+    """
+    for name in names:
+        value = getattr(settings, name, None)
+        if value:
+            return value
 
-def draft_email_content(email_type: str, context: dict) -> dict:
-	prompt = f"""
-You are EKAM, an autonomous event management system.
-Draft a professional warm email for the following situation.
+    return default
+
+
+def _enum_value(value: Any) -> Any:
+    """
+    Return enum.value when available; otherwise return the original value.
+    """
+    return getattr(value, "value", value)
+
+
+def _normalize_token(value: Any) -> str:
+    """
+    Normalize enum names/values like:
+      registration_open
+      Registration Open
+      registration-open
+
+    into a comparable lowercase token.
+    """
+    return (
+        str(_enum_value(value))
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+    )
+
+
+def _stage_tokens(stage: EventStage) -> set[str]:
+    """
+    Return both enum name and enum value tokens for safer compatibility across branches.
+    """
+    tokens: set[str] = set()
+
+    for candidate in (
+        getattr(stage, "name", None),
+        getattr(stage, "value", None),
+        stage,
+    ):
+        if candidate is not None:
+            tokens.add(_normalize_token(candidate))
+
+    return tokens
+
+
+def _stage_is(stage: EventStage, *expected: str) -> bool:
+    """
+    Check whether a stage matches one of several possible stage names.
+    This prevents crashes if branches used slightly different EventStage names.
+    """
+    actual_tokens = _stage_tokens(stage)
+    expected_tokens = {_normalize_token(item) for item in expected}
+
+    return bool(actual_tokens.intersection(expected_tokens))
+
+
+def _certificate_label_for_stage(stage: EventStage) -> str:
+    """
+    Human-readable certificate achievement label.
+    """
+    if _stage_is(stage, "results_generated", "results"):
+        return "Results Generated"
+
+    if _stage_is(stage, "completed", "complete", "event_completed"):
+        return "Event Completion"
+
+    if _stage_is(stage, "evaluation", "evaluation_round"):
+        return "Evaluation Round Completion"
+
+    if _stage_is(stage, "submission", "submission_round"):
+        return "Submission Round Completion"
+
+    if _stage_is(stage, "team_formation"):
+        return "Team Formation"
+
+    return "Participation"
+
+
+def _participant_is_certificate_eligible(participant: Participant) -> bool:
+    """
+    Certificates should generally go to confirmed/registered participants.
+
+    This is intentionally tolerant because different branches may store participant
+    status differently.
+    """
+    status_value = getattr(participant, "status", None)
+
+    if status_value is None:
+        return True
+
+    normalized_status = _normalize_token(status_value)
+
+    return normalized_status in {
+        "confirmed",
+        "registered",
+        "approved",
+        "accepted",
+        "active",
+    }
+
+
+def _safe_certificate_filename(participant_name: str) -> str:
+    """
+    Create a simple safe HTML filename.
+    """
+    cleaned = "".join(
+        char if char.isalnum() else "_"
+        for char in participant_name.strip()
+    ).strip("_")
+
+    if not cleaned:
+        cleaned = "participant"
+
+    return f"certificate_{cleaned}.html"
+
+
+# ---------------------------------------------------------------------
+# AI EMAIL DRAFTING
+# ---------------------------------------------------------------------
+
+
+def _draft_email_content_sync(
+    groq_client: Groq,
+    model: str,
+    email_type: str,
+    context: dict,
+) -> dict:
+    """
+    Synchronous Groq call.
+
+    Called via asyncio.to_thread so it does not block the FastAPI event loop.
+    """
+    prompt = f"""You are EKAM, an autonomous event management system.
+
+Draft a professional, warm email for the following situation.
 
 Email type: {email_type}
-Context: {json.dumps(context, indent=2)}
 
-Return ONLY valid JSON, no markdown, no backticks:
-{
-	"subject": "...",
-	"body_text": "plain text version",
-	"body_html": "<p>html version</p>"
-}
+Context:
+{json.dumps(context, indent=2)}
+
+Return ONLY valid JSON. No markdown fences. No extra text.
+
+{{
+    "subject": "...",
+    "body_text": "plain text version",
+    "body_html": "<p>html version</p>"
+}}
 
 Rules:
-- Use actual names from context, never write [Name] or placeholders
-- Be concise and warm
-- Sign off as Team EKAM
-"""
-	response = client.models.generate_content(
-		model="gemini-1.5-flash-latest",
-		contents=prompt
-	)
-	raw = response.text.strip()
-	try:
-		return json.loads(raw)
-	except json.JSONDecodeError:
-		start = raw.find("{")
-		end = raw.rfind("}") + 1
-		return json.loads(raw[start:end])
-
-
-def _clean_groq_html(raw: str) -> str:
-	if raw.startswith("```html"):
-		raw = raw[7:]
-	elif raw.startswith("```"):
-		raw = raw[3:]
-	if raw.endswith("```"):
-		raw = raw[:-3]
-	return raw.strip()
-
-
-def _certificate_label_for_stage(stage_name: str) -> str:
-	mapping = {
-		"Registration Open": "Registration Confirmed",
-		"Registration Closed": "Participant Registered",
-		"OA Round": "OA Round Completion",
-		"Team Formation": "Team Formation",
-		"Submission Round": "Submission Completed",
-		"Evaluation Round": "Evaluation Completed",
-		"Results Generated": "Results Generated",
-		"Event Completed": "Event Completed",
-	}
-	return mapping.get(stage_name, "Participation")
-
-
-def generate_certificate_html(
-	participant_name: str,
-	competition_name: str,
-	achievement: str = "Participation",
-	date: str = ""
-) -> str:
-	api_key = os.environ.get("GROQ_API_KEY", "")
-	if not api_key:
-		raise RuntimeError("GROQ_API_KEY not configured in environment")
-
-	if not date:
-		date = datetime.now().strftime("%B %d, %Y")
-
-	client = Groq(api_key=api_key)
-	prompt = f"""
-You are a professional certificate designer. Generate ONLY valid HTML for a printable certificate.
-Recipient: {participant_name}
-Competition: {competition_name}
-Achievement: {achievement}
-Date: {date}
-
-Include a small line describing the stage the participant reached, such as "Stage reached: {achievement}".
-
-The certificate should include:
-- the competition name clearly visible
-- the recipient name prominently displayed
-- the achievement title
-- the stage reached description
-- an elegant border and typography
-- a signature line for the organizer
-- inline CSS so the file can be opened by itself
-
-Return ONLY the HTML content and no markdown, no code fences, no surrounding text.
+- Use actual names from context, never write [Name] or placeholders.
+- Be concise and warm.
+- Sign off as: Team EKAM
 """
 
-	response = client.chat.completions.create(
-		model="mixtral-8x7b-32768",
-		messages=[
-			{"role": "system", "content": "You are a professional certificate designer. Return only HTML."},
-			{"role": "user", "content": prompt},
-		],
-		temperature=0.25,
-		max_tokens=1600,
-	)
+    response = groq_client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        temperature=0.7,
+        max_tokens=800,
+    )
 
-	raw_html = ""
-	if response.choices and response.choices[0].message:
-		raw_html = response.choices[0].message.content or ""
-	else:
-		raw_html = str(response)
+    raw = response.choices[0].message.content.strip()
 
-	return _clean_groq_html(raw_html)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
 
+        if start != -1 and end > start:
+            return json.loads(raw[start:end])
 
-def send_email_smtp(
-	recipient_email: str,
-	subject: str,
-	body_html: str,
-	body_text: str,
-	attachments: Optional[Dict[str, bytes]] = None,
-) -> bool:
-	smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-	smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-	smtp_username = os.environ.get("SMTP_USERNAME", "")
-	smtp_password = os.environ.get("SMTP_PASSWORD", "")
-	sender_email = os.environ.get("SENDER_EMAIL", smtp_username)
-	sender_name = os.environ.get("SENDER_NAME", "EKAM")
-
-	if not smtp_username or not smtp_password or not sender_email:
-		raise RuntimeError("SMTP credentials are not configured")
-
-	msg = MIMEMultipart("mixed")
-	msg["Subject"] = subject
-	msg["From"] = f"{sender_name} <{sender_email}>"
-	msg["To"] = recipient_email
-
-	alternative = MIMEMultipart("alternative")
-	alternative.attach(MIMEText(body_text, "plain"))
-	alternative.attach(MIMEText(body_html, "html"))
-	msg.attach(alternative)
-
-	if attachments:
-		for filename, file_bytes in attachments.items():
-			part = MIMEBase("application", "octet-stream")
-			part.set_payload(file_bytes)
-			encoders.encode_base64(part)
-			part.add_header("Content-Disposition", f"attachment; filename={filename}")
-			msg.attach(part)
-
-	with smtplib.SMTP(smtp_server, smtp_port) as server:
-		server.starttls()
-		server.login(smtp_username, smtp_password)
-		server.send_message(msg)
-
-	return True
+        raise
 
 
-async def on_certificate_distribution(
-	event: Event,
-	db: AsyncSession,
-	requested_by: str,
-	achievement: str = "Participation"
-):
-	result = await db.execute(
-		select(User)
-		.join(Participant, User.id == Participant.user_id)
-		.where(
-			Participant.event_id == event.id,
-			Participant.status == "confirmed"
-		)
-	)
-	users = result.scalars().all()
-	if not users:
-		return
+async def draft_email_content(email_type: str, context: dict) -> dict:
+    """
+    AI-draft email content using Groq.
 
-	recipients = []
-	sent = 0
-	failed = 0
+    Falls back to a plain template if Groq is unavailable or returns malformed JSON.
+    """
+    groq_api_key = _settings_value(
+        "GROQ_API_KEY",
+        "groq_api_key",
+        default=None,
+    )
 
-	for user in users:
-		if not user.email:
-			continue
+    groq_model = _settings_value(
+        "GROQ_MODEL",
+        "groq_model",
+        default="llama-3.3-70b-versatile",
+    )
 
-		certificate_html = generate_certificate_html(
-			participant_name=user.name,
-			competition_name=event.name,
-			achievement=achievement,
-			date=datetime.now().strftime("%B %d, %Y")
-		)
+    if groq_api_key:
+        try:
+            client = Groq(api_key=groq_api_key)
 
-		subject = f"{event.name} Certificate of {achievement}"
-		body_html = f"""
-<html>
-  <body style=\"font-family: Arial, sans-serif; line-height: 1.6; color: #111;\">
-	<p>Dear {user.name},</p>
-	<p>Congratulations on your participation in <strong>{event.name}</strong>!</p>
-	<p>Your certificate of <strong>{achievement}</strong> is attached to this email.</p>
-	<p>This certificate recognizes the stage reached: <strong>{achievement}</strong>.</p>
-	<p>Thank you for being part of the competition.</p>
-	<p>Best regards,<br/>Team EKAM</p>
-  </body>
-</html>
-"""
-		body_text = (
-			f"Dear {user.name},\n\n"
-			f"Congratulations on your participation in {event.name}! "
-			f"Your certificate of {achievement} is attached to this email.\n\n"
-			f"This certificate recognizes the stage reached: {achievement}.\n\n"
-			"Thank you for being part of the competition.\n\n"
-			"Best regards,\nTeam EKAM"
-		)
-		attachment_name = f"certificate_{user.name.replace(' ', '_')}.html"
+            return await asyncio.to_thread(
+                _draft_email_content_sync,
+                client,
+                groq_model,
+                email_type,
+                context,
+            )
 
-		try:
-			send_email_smtp(
-				recipient_email=user.email,
-				subject=subject,
-				body_html=body_html,
-				body_text=body_text,
-				attachments={attachment_name: certificate_html.encode("utf-8")},
-			)
-			sent += 1
-			recipients.append(user.email)
-		except Exception as exc:
-			print(f"Certificate email failed for {user.email}: {exc}")
-			failed += 1
+        except Exception as exc:
+            print(
+                f"[email_triggers] Groq drafting failed: {exc}. "
+                "Using fallback template."
+            )
 
-	if recipients:
-		await draft_bulk_emails(
-			db=db,
-			event_id=str(event.id),
-			requested_by=requested_by,
-			email_type=EmailType.certificate,
-			subject=f"{event.name} Certificate of {achievement}",
-			body_html="Certificates sent successfully.",
-			body_text="Certificates sent successfully.",
-			recipients=recipients,
-		)
-
-	print(f"Γ£ô Certificate distribution complete: {sent} sent, {failed} failed")
+    return _fallback_template(email_type, context)
 
 
-# ΓöÇΓöÇΓöÇ STAGE TRIGGERS ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+def _fallback_template(email_type: str, context: dict) -> dict:
+    """
+    Minimal template used when AI drafting fails.
+    """
+    event_name = context.get("event_name", "EKAM Event")
+    message = context.get("message", "")
+
+    subject = f"[EKAM] Update from {event_name}"
+
+    body_text = (
+        f"Hello,\n\n"
+        f"This is an update from {event_name}.\n\n"
+        f"{message}\n\n"
+        f"Team EKAM"
+    )
+
+    body_html = (
+        f"<p>Hello,</p>"
+        f"<p>This is an update from <strong>{event_name}</strong>.</p>"
+        f"<p>{message}</p>"
+        f"<p>Team EKAM</p>"
+    )
+
+    return {
+        "subject": subject,
+        "body_text": body_text,
+        "body_html": body_html,
+    }
+
+
+# ---------------------------------------------------------------------
+# STAGE-SPECIFIC EMAIL DRAFTERS
+# ---------------------------------------------------------------------
+
 
 async def on_registration_open(
-	event: Event,
-	db: AsyncSession,
-	requested_by: str
+    event: Event,
+    db: AsyncSession,
+    requested_by: str,
 ):
-	result = await db.execute(
-		select(User)
-		.join(Participant, User.id == Participant.user_id)
-		.where(
-			Participant.event_id == event.id,
-			Participant.status == "confirmed"
-		)
-	)
-	users = result.scalars().all()
-	if not users:
-		return
+    """
+    Draft a welcome email to all participants.
+    """
+    result = await db.execute(
+        select(Participant).where(
+            Participant.event_id == event.id,
+        )
+    )
+    participants = result.scalars().all()
 
-	# draft one email per participant with their name
-	# but use bulk for approval gate
-	context = {
-		"event_name": event.name,
-		"event_description": event.description,
-		"event_type": event.type,
-	}
-	content = draft_email_content("welcome", context)
+    if not participants:
+        return
 
-	recipients = [user.email for user in users if user.email]
-	await draft_bulk_emails(
-		db=db,
-		event_id=str(event.id),
-		requested_by=requested_by,
-		email_type=EmailType.invitation,
-		subject=content["subject"],
-		body_html=content["body_html"],
-		body_text=content["body_text"],
-		recipients=recipients
-	)
-	print(f"Γ£ô Welcome email batch drafted for {len(recipients)} participants")
+    context = {
+        "event_name": event.name,
+        "event_description": event.description or "",
+        "event_type": str(_enum_value(getattr(event, "type", ""))),
+        "message": (
+            "Registration is now open. Log in to EKAM to complete your profile "
+            "and participate in the event."
+        ),
+    }
+
+    content = await draft_email_content("welcome", context)
+
+    recipients = [
+        participant.email
+        for participant in participants
+        if getattr(participant, "email", None)
+    ]
+
+    if recipients:
+        await draft_bulk_emails(
+            db=db,
+            event_id=str(event.id),
+            requested_by=requested_by,
+            email_type=EmailType.invitation,
+            subject=content["subject"],
+            body_html=content["body_html"],
+            body_text=content["body_text"],
+            recipients=recipients,
+        )
+
+        print(
+            f"[email_triggers] Welcome email batch drafted for "
+            f"{len(recipients)} participants"
+        )
 
 
 async def on_teams_formed(
-	event: Event,
-	teams: list,
-	db: AsyncSession,
-	requested_by: str
+    event: Event,
+    teams: list,
+    db: AsyncSession,
+    requested_by: str,
 ):
-	for team in teams:
-		teammates_summary = ", ".join(
-			f"{m['name']} ({m['institution']})"
-			for m in team["members"]
-		)
-		context = {
-			"event_name": event.name,
-			"team_name": team["name"],
-			"teammates": teammates_summary,
-			"rationale": team.get("rationale", ""),
-		}
-		content = draft_email_content("team_assignment", context)
-		recipients = [m["email"] for m in team["members"]]
+    """
+    Draft a team assignment email for each team.
+    """
+    for team in teams:
+        members = team.get("members", [])
 
-		await draft_bulk_emails(
-			db=db,
-			event_id=str(event.id),
-			requested_by=requested_by,
-			email_type=EmailType.team_assignment,
-			subject=content["subject"],
-			body_html=content["body_html"],
-			body_text=content["body_text"],
-			recipients=recipients
-		)
-		print(f"Γ£ô Team assignment batch drafted for {team['name']}")
+        if not members:
+            continue
+
+        teammates_summary = ", ".join(
+            f"{member.get('name', 'Member')} "
+            f"({member.get('institution', '')})"
+            for member in members
+        )
+
+        context = {
+            "event_name": event.name,
+            "team_name": team.get("name", "Your Team"),
+            "teammates": teammates_summary,
+            "rationale": team.get("rationale", ""),
+            "message": (
+                "You have been assigned to a team. "
+                "Log in to EKAM to view your team details."
+            ),
+        }
+
+        content = await draft_email_content("team_assignment", context)
+
+        recipients = [
+            member["email"]
+            for member in members
+            if member.get("email")
+        ]
+
+        if recipients:
+            await draft_bulk_emails(
+                db=db,
+                event_id=str(event.id),
+                requested_by=requested_by,
+                email_type=EmailType.team_assignment,
+                subject=content["subject"],
+                body_html=content["body_html"],
+                body_text=content["body_text"],
+                recipients=recipients,
+            )
+
+            print(
+                f"[email_triggers] Team assignment batch drafted for "
+                f"{team.get('name')}"
+            )
 
 
 async def on_submission_stage(
-	event: Event,
-	db: AsyncSession,
-	requested_by: str
+    event: Event,
+    db: AsyncSession,
+    requested_by: str,
 ):
-	result = await db.execute(
-		select(User)
-		.join(Participant, User.id == Participant.user_id)
-		.where(
-			Participant.event_id == event.id,
-			Participant.status == "confirmed"
-		)
-	)
-	users = result.scalars().all()
-	if not users:
-		return
+    """
+    Draft a submission phase announcement to all participants.
+    """
+    result = await db.execute(
+        select(Participant).where(
+            Participant.event_id == event.id,
+        )
+    )
+    participants = result.scalars().all()
 
-	context = {
-		"event_name": event.name,
-		"stage": "submission",
-		"message": "The submission phase has now begun. Please submit your project before the deadline."
-	}
-	content = draft_email_content("stage_update", context)
-	recipients = [user.email for user in users if user.email]
+    if not participants:
+        return
 
-	await draft_bulk_emails(
-		db=db,
-		event_id=str(event.id),
-		requested_by=requested_by,
-		email_type=EmailType.stage_update,
-		subject=content["subject"],
-		body_html=content["body_html"],
-		body_text=content["body_text"],
-		recipients=recipients
-	)
-	print(f"Γ£ô Submission stage email batch drafted")
+    context = {
+        "event_name": event.name,
+        "message": (
+            "The submission phase has now begun. "
+            "Please submit your project before the deadline."
+        ),
+    }
+
+    content = await draft_email_content("stage_update", context)
+
+    recipients = [
+        participant.email
+        for participant in participants
+        if getattr(participant, "email", None)
+    ]
+
+    if recipients:
+        await draft_bulk_emails(
+            db=db,
+            event_id=str(event.id),
+            requested_by=requested_by,
+            email_type=EmailType.stage_update,
+            subject=content["subject"],
+            body_html=content["body_html"],
+            body_text=content["body_text"],
+            recipients=recipients,
+        )
+
+        print("[email_triggers] Submission stage email batch drafted")
 
 
 async def on_evaluation_stage(
-	event: Event,
-	judge_assignments: list,
-	db: AsyncSession,
-	requested_by: str
+    event: Event,
+    db: AsyncSession,
+    requested_by: str,
+    judge_assignments: list | None = None,
 ):
-	for assignment in judge_assignments:
-		context = {
-			"judge_name": assignment["judge_name"],
-			"event_name": event.name,
-			"assigned_teams": assignment["teams"],
-			"magic_link": assignment["magic_link"],
-			"deadline": assignment.get("deadline", "TBD"),
-		}
-		content = draft_email_content("judge_notification", context)
+    """
+    Draft evaluation-start emails for judges.
 
-		await draft_bulk_emails(
-			db=db,
-			event_id=str(event.id),
-			requested_by=requested_by,
-			email_type=EmailType.magic_link,
-			subject=content["subject"],
-			body_html=content["body_html"],
-			body_text=content["body_text"],
-			recipients=[assignment["judge_email"]]
-		)
-		print(f"Γ£ô Judge magic link drafted for {assignment['judge_email']}")
+    If judge_assignments are not passed in, query them from DB.
+    Each judge gets a draft with their assigned teams.
+    """
+    if not judge_assignments:
+        judge_result = await db.execute(
+            select(Judge).where(
+                Judge.event_id == event.id,
+            )
+        )
+        judges = judge_result.scalars().all()
 
+        judge_assignments = []
 
-async def on_results_approved(
-	event: Event,
-	results: list,
-	db: AsyncSession,
-	requested_by: str
-):
-	context = {
-		"event_name": event.name,
-		"message": "Results have been announced. Check your score and feedback below."
-	}
-	content = draft_email_content("result", context)
-	recipients = [p["email"] for p in results]
+        for judge in judges:
+            assignment_result = await db.execute(
+                select(JudgeAssignment).where(
+                    JudgeAssignment.judge_id == judge.id,
+                )
+            )
+            assignments = assignment_result.scalars().all()
 
-	await draft_bulk_emails(
-		db=db,
-		event_id=str(event.id),
-		requested_by=requested_by,
-		email_type=EmailType.result,
-		subject=content["subject"],
-		body_html=content["body_html"],
-		body_text=content["body_text"],
-		recipients=recipients
-	)
-	print(f"Γ£ô Results email batch drafted for {len(recipients)} participants")
+            if assignments:
+                judge_assignments.append(
+                    {
+                        "judge_name": judge.name or judge.email,
+                        "judge_email": judge.email,
+                        "teams": [
+                            str(assignment.team_id)
+                            for assignment in assignments
+                        ],
+                        "magic_link": "",
+                        "deadline": "TBD",
+                    }
+                )
+
+    for assignment in judge_assignments:
+        judge_email = assignment.get("judge_email")
+
+        if not judge_email:
+            continue
+
+        context = {
+            "event_name": event.name,
+            "judge_name": assignment.get("judge_name", "Judge"),
+            "assigned_teams": assignment.get("teams", []),
+            "deadline": assignment.get("deadline", "TBD"),
+            "message": (
+                "You have been assigned submissions to evaluate. "
+                "Please log in to EKAM to begin."
+            ),
+        }
+
+        content = await draft_email_content("judge_notification", context)
+
+        await draft_bulk_emails(
+            db=db,
+            event_id=str(event.id),
+            requested_by=requested_by,
+            email_type=EmailType.stage_update,
+            subject=content["subject"],
+            body_html=content["body_html"],
+            body_text=content["body_text"],
+            recipients=[judge_email],
+        )
+
+        print(
+            f"[email_triggers] Judge evaluation draft created for "
+            f"{judge_email}"
+        )
 
 
 async def on_progression(
-	event: Event,
-	qualifying_teams: list,
-	db: AsyncSession,
-	requested_by: str
+    event: Event,
+    qualifying_teams: list,
+    db: AsyncSession,
+    requested_by: str,
 ):
-	all_recipients = []
-	for team in qualifying_teams:
-		all_recipients.extend([m["email"] for m in team["members"]])
+    """
+    Draft a progression congratulations email to all qualifying team members.
+    """
+    all_recipients: list[str] = []
 
-	context = {
-		"event_name": event.name,
-		"message": "Congratulations! Your team has qualified for the next round."
-	}
-	content = draft_email_content("progression", context)
+    for team in qualifying_teams:
+        all_recipients.extend(
+            member["email"]
+            for member in team.get("members", [])
+            if member.get("email")
+        )
 
-	await draft_bulk_emails(
-		db=db,
-		event_id=str(event.id),
-		requested_by=requested_by,
-		email_type=EmailType.progression,
-		subject=content["subject"],
-		body_html=content["body_html"],
-		body_text=content["body_text"],
-		recipients=all_recipients
-	)
-	print(f"Γ£ô Progression email batch drafted for {len(all_recipients)} participants")
+    if not all_recipients:
+        participant_result = await db.execute(
+            select(Participant).where(
+                Participant.event_id == event.id,
+            )
+        )
+        all_recipients = [
+            participant.email
+            for participant in participant_result.scalars().all()
+            if getattr(participant, "email", None)
+        ]
+
+    if not all_recipients:
+        return
+
+    context = {
+        "event_name": event.name,
+        "message": "Congratulations! Your team has qualified for the next round.",
+    }
+
+    content = await draft_email_content("progression", context)
+
+    await draft_bulk_emails(
+        db=db,
+        event_id=str(event.id),
+        requested_by=requested_by,
+        email_type=EmailType.progression,
+        subject=content["subject"],
+        body_html=content["body_html"],
+        body_text=content["body_text"],
+        recipients=all_recipients,
+    )
+
+    print(
+        f"[email_triggers] Progression email batch drafted for "
+        f"{len(all_recipients)} recipients"
+    )
+
+
+async def on_results_approved(
+    event: Event,
+    results: list,
+    db: AsyncSession,
+    requested_by: str,
+):
+    """
+    Draft a results announcement email.
+    """
+    recipients = [
+        participant.get("email")
+        for participant in results
+        if participant.get("email")
+    ]
+
+    if not recipients:
+        participant_result = await db.execute(
+            select(Participant).where(
+                Participant.event_id == event.id,
+            )
+        )
+        recipients = [
+            participant.email
+            for participant in participant_result.scalars().all()
+            if getattr(participant, "email", None)
+        ]
+
+    if not recipients:
+        return
+
+    context = {
+        "event_name": event.name,
+        "message": (
+            "Results have been announced. "
+            "Log in to EKAM to check your score and feedback."
+        ),
+    }
+
+    content = await draft_email_content("result", context)
+
+    await draft_bulk_emails(
+        db=db,
+        event_id=str(event.id),
+        requested_by=requested_by,
+        email_type=EmailType.result,
+        subject=content["subject"],
+        body_html=content["body_html"],
+        body_text=content["body_text"],
+        recipients=recipients,
+    )
+
+    print(
+        f"[email_triggers] Results email batch drafted for "
+        f"{len(recipients)} recipients"
+    )
+
+
+async def on_certificate_distribution(
+    event: Event,
+    db: AsyncSession,
+    requested_by: str,
+    achievement: str = "Participation",
+):
+    """
+    Generate and directly email certificates to eligible participants.
+
+    This intentionally does not replace existing approval-based email drafting.
+    It only runs when trigger_stage_emails calls it.
+    """
+    participant_result = await db.execute(
+        select(Participant).where(
+            Participant.event_id == event.id,
+        )
+    )
+    participants = participant_result.scalars().all()
+
+    if not participants:
+        print("[email_triggers] No participants found for certificate distribution")
+        return
+
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    for participant in participants:
+        participant_email = getattr(participant, "email", None)
+
+        if not participant_email:
+            skipped_count += 1
+            continue
+
+        if not _participant_is_certificate_eligible(participant):
+            skipped_count += 1
+            continue
+
+        participant_name = (
+            getattr(participant, "name", None)
+            or participant_email.split("@")[0]
+            or "Participant"
+        )
+
+        try:
+            certificate_html = generate_certificate_html(
+                participant_name=participant_name,
+                competition_name=event.name,
+                achievement=achievement,
+            )
+
+            subject = f"{event.name} Certificate of {achievement}"
+
+            body_text = (
+                f"Dear {participant_name},\n\n"
+                f"Congratulations on your participation in {event.name}.\n\n"
+                f"Your certificate of {achievement} is attached as an HTML file.\n\n"
+                f"Best regards,\n"
+                f"Team EKAM"
+            )
+
+            body_html = f"""
+<p>Dear {participant_name},</p>
+<p>Congratulations on your participation in <strong>{event.name}</strong>.</p>
+<p>Your certificate of <strong>{achievement}</strong> is attached as an HTML file.</p>
+<p>Best regards,<br/>Team EKAM</p>
+"""
+
+            attachment_name = _safe_certificate_filename(participant_name)
+
+            await asyncio.to_thread(
+                send_email_smtp,
+                recipient_email=participant_email,
+                subject=subject,
+                body_html=body_html,
+                body_text=body_text,
+                attachments={
+                    attachment_name: certificate_html.encode("utf-8"),},
+            )
+
+            sent_count += 1
+
+        except Exception as exc:
+            print(
+                f"[email_triggers] Certificate email failed for "
+                f"{participant_email}: {exc}"
+            )
+            failed_count += 1
+
+    print(
+        "[email_triggers] Certificate distribution complete: "
+        f"{sent_count} sent, {failed_count} failed, {skipped_count} skipped. "
+        f"Requested by: {requested_by}"
+    )
+
+
+# ---------------------------------------------------------------------
+# MASTER TRIGGER
+# ---------------------------------------------------------------------
 
 
 async def trigger_stage_emails(
-	event: Event,
-	new_stage: EventStage,
-	db: AsyncSession,
-	requested_by: str,
-	extra_data: dict = {}
+    event: Event,
+    new_stage: EventStage,
+    db: AsyncSession,
+    requested_by: str,
+    extra_data: dict | None = None,
 ):
-	"""
-	Call this whenever event.stage changes.
+    """
+    Call this whenever event.stage changes.
 
-	Usage:
-	await trigger_stage_emails(
-		event=event,
-		new_stage=EventStage.team_formation,
-		db=db,
-		requested_by=str(current_user.id),
-		extra_data={"teams": result_teams}
-	)
-	"""
-	print(f"\n≡ƒôº Triggering emails for stage: {new_stage}")
+    Existing behavior:
+      - registration -> draft welcome emails
+      - team_formation -> draft team emails
+      - submission -> draft submission emails
+      - evaluation -> draft judge emails
+      - completed -> draft results/progression emails
 
-	if new_stage == EventStage.registration_open:
-		await on_registration_open(event, db, requested_by)
+    Added behavior:
+      - results_generated -> directly send certificates
+      - completed + extra_data["send_certificates"] == True -> directly send certificates
+    """
+    if extra_data is None:
+        extra_data = {}
 
-	elif new_stage == EventStage.team_formation:
-		teams = extra_data.get("teams", [])
-		if teams:
-			await on_teams_formed(event, teams, db, requested_by)
+    stage_value = getattr(new_stage, "value", new_stage)
 
-	elif new_stage == EventStage.submission_round:
-		await on_submission_stage(event, db, requested_by)
+    print(f"\n[email_triggers] Handling email trigger for stage: {stage_value}")
 
-	elif new_stage == EventStage.evaluation_round:
-		judge_assignments = extra_data.get("judge_assignments", [])
-		if judge_assignments:
-			await on_evaluation_stage(event, judge_assignments, db, requested_by)
+    try:
+        if _stage_is(new_stage, "registration", "registration_open"):
+            await on_registration_open(
+                event=event,
+                db=db,
+                requested_by=requested_by,
+            )
 
-	elif new_stage == EventStage.results_generated:
-		achievement = _certificate_label_for_stage(new_stage.value)
-		await on_certificate_distribution(event, db, requested_by, achievement)
+        elif _stage_is(new_stage, "team_formation"):
+            teams = extra_data.get("teams", [])
 
-	elif new_stage == EventStage.completed:
-		results = extra_data.get("results", [])
-		qualifying = extra_data.get("qualifying_teams", [])
-		if results:
-			await on_results_approved(event, results, db, requested_by)
-		if qualifying:
-			await on_progression(event, qualifying, db, requested_by)
-		if extra_data.get("send_certificates"):
-			achievement = extra_data.get("certificate_achievement", _certificate_label_for_stage(new_stage.value))
-			await on_certificate_distribution(event, db, requested_by, achievement)
+            if teams:
+                await on_teams_formed(
+                    event=event,
+                    teams=teams,
+                    db=db,
+                    requested_by=requested_by,
+                )
 
-	print(f"Γ£ô All email drafts created for stage: {new_stage}\n")
+        elif _stage_is(new_stage, "submission", "submission_round"):
+            await on_submission_stage(
+                event=event,
+                db=db,
+                requested_by=requested_by,
+            )
+
+        elif _stage_is(new_stage, "evaluation", "evaluation_round"):
+            judge_assignments = extra_data.get("judge_assignments")
+
+            await on_evaluation_stage(
+                event=event,
+                db=db,
+                requested_by=requested_by,
+                judge_assignments=judge_assignments,
+            )
+
+        elif _stage_is(new_stage, "results_generated", "results"):
+            achievement = extra_data.get(
+                "certificate_achievement",
+                _certificate_label_for_stage(new_stage),
+            )
+
+            await on_certificate_distribution(
+                event=event,
+                db=db,
+                requested_by=requested_by,
+                achievement=achievement,
+            )
+
+        elif _stage_is(new_stage, "completed", "complete", "event_completed"):
+            results = extra_data.get("results", [])
+            qualifying = extra_data.get("advancing_teams", [])
+
+            if results:
+                await on_results_approved(
+                    event=event,
+                    results=results,
+                    db=db,
+                    requested_by=requested_by,
+                )
+
+            if qualifying:
+                await on_progression(
+                    event=event,
+                    qualifying_teams=qualifying,
+                    db=db,
+                    requested_by=requested_by,
+                )
+
+            if extra_data.get("send_certificates"):
+                achievement = extra_data.get(
+                    "certificate_achievement",
+                    _certificate_label_for_stage(new_stage),
+                )
+
+                await on_certificate_distribution(
+                    event=event,
+                    db=db,
+                    requested_by=requested_by,
+                    achievement=achievement,
+                )
+
+    except Exception as exc:
+        # Email failures should never crash the event pipeline.
+        print(
+            f"[email_triggers] ERROR while handling stage "
+            f"{stage_value}: {exc}"
+        )
+
+    print(f"[email_triggers] Done handling email trigger for stage: {stage_value}\n")
+
+
