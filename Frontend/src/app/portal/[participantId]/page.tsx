@@ -187,6 +187,34 @@ export default function ParticipantPortal({ params }: { params: Promise<{ partic
           </Card>
         </motion.div>
 
+        {/* Performance Report */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}>
+          <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Performance Report</CardTitle>
+                <Trophy className="h-4 w-4 text-primary" />
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                View your detailed performance analysis based on all rounds of evaluation. Get insights on your strengths and areas for improvement.
+              </p>
+              <div className="flex items-center justify-between p-3 rounded-lg bg-primary/5 border border-primary/10">
+                <div>
+                  <p className="text-sm font-medium">AI-Generated Analysis</p>
+                  <p className="text-xs text-muted-foreground">Personalized insights powered by Groq LLM</p>
+                </div>
+              </div>
+              <Button asChild className="w-full">
+                <Link href={`/portal/${participantId}/performance-report`} className="flex items-center justify-center gap-2">
+                  View Performance Report <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Activity Timeline */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
           <Card className="border-border/50 bg-card/80 backdrop-blur-sm">
