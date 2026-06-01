@@ -19,7 +19,8 @@ import {
   markNotificationRead,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Event, Round, Judge, JudgeDashboard, JudgeAssignmentDetail } from "@/types";
+import type { Event, Round, Judge, JudgeDashboard } from "@/types";
+import type { JudgeAssignmentDetail } from "@/lib/api";
 import Navbar from "@/components/layout/Navbar";
 import Sidebar from "@/components/layout/Sidebar";
 

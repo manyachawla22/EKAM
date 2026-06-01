@@ -20,12 +20,15 @@ const roleBadgeVariant = {
 };
 
 export default function Navbar() {
-  const { user, profile, loading } = useAuth();
+  const { profile, loading, clearAuth } = useAuth();
   const router = useRouter();
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      // Clear the EKAM JWT session (participants/judges have no Firebase user)
+      clearAuth();
+      // Firebase signOut is a no-op for OTP sessions but required for organizers
+      await signOut(auth).catch(() => null);
       router.push("/");
       toast.success("Logged out successfully");
     } catch {
@@ -55,7 +58,7 @@ export default function Navbar() {
         <div className="flex items-center gap-3">
           {loading ? (
             <div className="h-8 w-32 animate-pulse rounded-lg bg-white/5" />
-          ) : user && profile ? (
+          ) : profile ? (
             <>
               {/* User info */}
               <div className="hidden sm:flex items-center gap-2 text-sm">

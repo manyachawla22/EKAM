@@ -128,6 +128,7 @@ export default function ParticipantEventDetailPage() {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [myParticipantId, setMyParticipantId] = useState<string | null>(null);
+  const [registeredCount, setRegisteredCount] = useState(0);
   const [leaderboard, setLeaderboard] = useState<Submission[]>([]);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [preferences, setPreferences] = useState<TeamPreference[]>([]);
@@ -159,28 +160,28 @@ export default function ParticipantEventDetailPage() {
     if (!id || !profile) return;
     if (initial) setLoading(true);
     try {
-      const [ev, roundsData, teamsData] = await Promise.all([
+      // Load everything independent in parallel — much faster than the previous
+      // chain of sequential round-trips (matters most on a cold backend).
+      const [ev, roundsData, teamsData, dash, parts, themesData] = await Promise.all([
         getEvent(id),
         listRounds(id).catch(() => [] as Round[]),
         listTeams(id).catch(() => [] as Team[]),
+        getParticipantDashboard(id).catch(() => null),
+        listParticipants(id).catch(() => []),
+        listThemes(id).catch(() => [] as Theme[]),
       ]);
       setEvent(ev);
       setRounds(roundsData);
       setTeams(teamsData);
-
-      const dash = await getParticipantDashboard(id).catch(() => null);
       setDashboard(dash);
+      setThemes(themesData);
 
       // Find participant id for this user
-      const parts = await listParticipants(id).catch(() => []);
+      setRegisteredCount(parts.length);
       const me = parts.find((p) => (p.email || "").toLowerCase() === (profile.email || "").toLowerCase());
       setMyParticipantId(me?.id ?? null);
 
-      // Themes
-      const themesData = await listThemes(id).catch(() => [] as Theme[]);
-      setThemes(themesData);
-
-      // Team preferences
+      // Team preferences (depends on the team id from the dashboard)
       if (dash?.team?.id) {
         const prefs = await getTeamPreferences(id, dash.team.id).catch(() => [] as TeamPreference[]);
         setPreferences(prefs);
@@ -208,7 +209,15 @@ export default function ParticipantEventDetailPage() {
   useEffect(() => {
     const onFocus = () => fetchAll(false);
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    // Poll so organizer-driven changes (team formation, stage advance, scores)
+    // show up without a manual refresh. Pauses while the tab is hidden.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") fetchAll(false);
+    }, 12000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      clearInterval(interval);
+    };
   }, [fetchAll]);
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -361,7 +370,7 @@ export default function ParticipantEventDetailPage() {
             <p style={{ marginTop: "0.25rem", fontSize: "0.875rem", color: "#e8503a", fontWeight: 500 }}>{event.type}</p>
             <p style={{ marginTop: "0.75rem", fontSize: "0.875rem", color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>{event.description}</p>
             <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid #222", fontSize: "0.8rem", color: "rgba(255,255,255,0.4)" }}>
-              Max {event.max_participants} participants
+              {registeredCount} participant{registeredCount !== 1 ? "s" : ""} registered
             </div>
           </div>
 

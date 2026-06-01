@@ -50,9 +50,18 @@ export default function CsvUploadButton({
       const result = await onUpload(file);
       const count =
         typeof result?.count === "number" ? result.count : undefined;
-      toast.success(
-        result?.message || (count != null ? `Imported ${count} rows` : "Uploaded")
-      );
+      if (count === 0) {
+        // Nothing new added — the backend message explains why (bad headers, or
+        // all rows already exist).
+        toast.warning(
+          result?.message ||
+            "No rows imported. Check that your CSV has 'name' and 'email' column headers."
+        );
+      } else {
+        toast.success(
+          result?.message || (count != null ? `Imported ${count} rows` : "Uploaded")
+        );
+      }
       onUploaded?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Upload failed");

@@ -188,8 +188,11 @@ export default function JudgesPage() {
             onUpload={(file) => uploadJudgesCsv(id, file)}
             onUploaded={async () => {
               if (!id) return;
-              const updated = await listJudges(id).catch(() => []);
-              setJudges(updated);
+              try {
+                setJudges(await listJudges(id));
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Imported, but failed to refresh the list — reload the page.");
+              }
             }}
           />
           <Button variant="primary" onClick={() => setInviteModalOpen(true)}>
