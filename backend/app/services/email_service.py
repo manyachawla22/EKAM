@@ -1,3 +1,4 @@
+
 """
 EKAM Email Service
 
@@ -394,3 +395,4 @@ async def list_drafts(
         ).order_by(EmailDraft.created_at.desc())
     )
     return list(result.scalars().all())
+

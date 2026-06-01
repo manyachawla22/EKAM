@@ -2,69 +2,101 @@
 EKAM Reports Router
 """
 
-from uuid import UUID
 from typing import List
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
-
-from app.middleware.auth import require_actor_type, require_event_access
 from app.core.auth_context import AuthContext
-
-from app.schemas.report import (
-    Report,
-    ReportCreate
+from app.core.database import get_db
+from app.middleware.auth import require_actor_type, require_event_access
+from app.schemas.report import Report as ReportSchema, ReportCreate
+from app.services.anomaly_service import analyze_evaluation
+from app.services.participant_performance_report_service import (
+    generate_participant_performance_report_service,
 )
-
 from app.services.report_service import (
     create_report_service,
-    list_reports_service
+    list_reports_service,
 )
 
 router = APIRouter(
     prefix="/reports",
-    tags=["Reports"]
+    tags=["Reports"],
 )
 
 
 @router.post(
     "/generate",
-    response_model=Report,
+    response_model=ReportSchema,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_actor_type(["organizer"]))]
 )
 async def generate_report(
     report_in: ReportCreate,
     auth: AuthContext = Depends(require_actor_type(["organizer"])),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     if not auth.can_access_event(str(report_in.event_id)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="No event access"
+            detail="No event access",
         )
-        
-    return await create_report_service(
-        db,
-        report_in
+
+    return await create_report_service(db, report_in)
+
+
+@router.post(
+    "/detect-anomalies/{event_id}",
+    response_model=ReportSchema,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def detect_anomaly_scores(
+    event_id: UUID,
+    contamination: float = 0.1,
+    db: AsyncSession = Depends(get_db),
+):
+    return await analyze_evaluation(
+        db=db,
+        event_id=event_id,
+        contamination=contamination,
+    )
+
+
+@router.get(
+    "/participant/{event_id}/{participant_id}",
+    dependencies=[
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def generate_participant_performance_report(
+    event_id: UUID,
+    participant_id: UUID,
+    auth: AuthContext = Depends(require_actor_type(["organizer", "participant"])),
+    db: AsyncSession = Depends(get_db),
+):
+    return await generate_participant_performance_report_service(
+        db=db,
+        event_id=event_id,
+        participant_id=participant_id,
+        auth=auth,
     )
 
 
 @router.get(
     "/{event_id}",
-    response_model=List[Report],
+    response_model=List[ReportSchema],
     dependencies=[
         Depends(require_actor_type(["organizer"])),
-        Depends(require_event_access("event_id"))
-    ]
+        Depends(require_event_access("event_id")),
+    ],
 )
 async def list_reports(
     event_id: UUID,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    return await list_reports_service(
-        db,
-        event_id
-    )
+    return await list_reports_service(db, event_id)

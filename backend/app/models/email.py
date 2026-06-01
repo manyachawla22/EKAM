@@ -1,7 +1,6 @@
-import enum
 import uuid
 from datetime import datetime
-
+import enum
 from sqlalchemy import (
     Column,
     String,
@@ -25,6 +24,7 @@ class EmailType(str, enum.Enum):
     reminder = "reminder"
     result = "result"
     progression = "progression"
+    certificate = "certificate"
 
 
 class EmailStatus(str, enum.Enum):
@@ -110,3 +110,4 @@ class EmailDraft(Base):
     # Relationships
     event = relationship("Event", backref="email_drafts")
     approval_request = relationship("ApprovalRequest", backref="emails")
+

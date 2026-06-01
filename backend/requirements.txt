@@ -1,3 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+asyncpg
+pydantic[email]
+pydantic-settings
+firebase-admin
+alembic
+python-jose[cryptography]
+python-multipart
+passlib[bcrypt]
+scikit-learn
+groq
 absl-py==2.4.0
 resend
 alembic==1.18.4
