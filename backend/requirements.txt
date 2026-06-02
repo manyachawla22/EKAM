@@ -2,6 +2,8 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 asyncpg
+pdfplumber
+requests
 pydantic[email]
 pydantic-settings
 firebase-admin
