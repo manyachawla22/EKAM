@@ -8,7 +8,8 @@ OTP/Magic links bypass approval for immediate delivery.
 """
 
 import asyncio
-from typing import List
+import base64
+from typing import List, Optional
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -166,6 +167,50 @@ async def _send_via_resend(
     response = await asyncio.to_thread(resend.Emails.send, params)
     print(f"[email_service] SENT [{email_type.upper()}] → {recipient}, id={response['id']}")
     return True
+
+
+async def send_direct_email(
+    to: str,
+    subject: str,
+    body_html: Optional[str] = None,
+    body_text: Optional[str] = None,
+    attachments: Optional[dict[str, bytes]] = None,
+) -> bool:
+    """
+    Send a single email immediately via Resend (no approval queue).
+
+    Used for system-triggered, non-bulk messages such as anomaly alerts to a
+    judge or a generated report to the organizer. `attachments` maps a filename
+    to its raw bytes. Never raises — returns True/False so callers (which run
+    in best-effort side-effect paths) are not interrupted.
+    """
+    try:
+        resend.api_key = settings.SMTP_PASSWORD
+
+        params: dict = {
+            "from": settings.EMAIL_FROM,
+            "to": [to],
+            "subject": subject,
+        }
+        if body_html:
+            params["html"] = body_html
+        if body_text:
+            params["text"] = body_text
+        if attachments:
+            params["attachments"] = [
+                {
+                    "filename": filename,
+                    "content": base64.b64encode(file_bytes).decode("ascii"),
+                }
+                for filename, file_bytes in attachments.items()
+            ]
+
+        response = await asyncio.to_thread(resend.Emails.send, params)
+        print(f"[email_service] DIRECT email sent → {to}, id={response.get('id')}")
+        return True
+    except Exception as exc:
+        print(f"[email_service] DIRECT email FAILED to {to}: {exc}")
+        return False
 
 
 async def send_email(

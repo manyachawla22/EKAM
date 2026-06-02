@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import {
-  Users, Trophy, Send, Plus, Trash2, Bell, Clock, CheckCircle2, Award,
+  Users, Trophy, Send, Plus, Trash2, Bell, Clock, CheckCircle2, Award, FileText, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -22,6 +22,7 @@ import {
   listThemes,
   getTeamPreferences,
   submitTeamPreference,
+  uploadSubmissionFile,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Event, Round, Team, ParticipantDashboard, Submission, Theme, TeamPreference } from "@/types";
@@ -121,7 +122,7 @@ function StagePipeline({ currentStage }: { currentStage: string }) {
 
 export default function ParticipantEventDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { profile } = useAuth();
+  const { profile, loading: authLoading } = useAuth();
 
   const [event, setEvent] = useState<Event | null>(null);
   const [dashboard, setDashboard] = useState<ParticipantDashboard | null>(null);
@@ -144,6 +145,7 @@ export default function ParticipantEventDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [selectedRound, setSelectedRound] = useState("");
   const [attachments, setAttachments] = useState<string[]>([""]);
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
 
   // Theme preference
   const [showPrefForm, setShowPrefForm] = useState(false);
@@ -157,7 +159,9 @@ export default function ParticipantEventDetailPage() {
     : null;
 
   const fetchAll = useCallback(async (initial = false) => {
-    if (!id || !profile) return;
+    // Clear the skeleton if we can't load yet (e.g. profile not ready), so a
+    // refresh before auth resolves doesn't get stuck on the loading state.
+    if (!id || !profile) { if (initial) setLoading(false); return; }
     if (initial) setLoading(true);
     try {
       // Load everything independent in parallel — much faster than the previous
@@ -247,13 +251,25 @@ export default function ParticipantEventDetailPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!myTeam || !selectedRound) { toast.error("Select a round first"); return; }
-    const urls = attachments.filter((a) => a.trim());
-    if (!urls.length) { toast.error("Add at least one attachment URL"); return; }
+    const linkUrls = attachments.filter((a) => a.trim());
+    if (!linkUrls.length && pdfFiles.length === 0) {
+      toast.error("Add at least one link or PDF");
+      return;
+    }
     setSubmitting(true);
     try {
+      // Upload any selected PDFs first; each returns a public URL that we add
+      // to the submission's attachments alongside the link URLs.
+      const fileUrls: string[] = [];
+      for (const file of pdfFiles) {
+        const res = await uploadSubmissionFile(file);
+        fileUrls.push(res.url);
+      }
+      const urls = [...linkUrls, ...fileUrls];
       await uploadSubmission({ team_id: myTeam.id, round_id: selectedRound, attachments: urls });
       toast.success("Submission uploaded!");
       setAttachments([""]);
+      setPdfFiles([]);
       setSelectedRound("");
       await fetchAll(false);
     } catch (err) {
@@ -329,13 +345,24 @@ export default function ParticipantEventDetailPage() {
 
   const showThemesSection = registered && dashboard?.team && ["registration", "team_formation", "submission"].includes(event?.stage ?? "");
 
-  if (loading) {
+  if (authLoading || loading) {
     return (
       <div style={pageWrap}>
         <Navbar />
         <div style={container}>
           <div className="shimmer" style={{ height: "2rem", width: "14rem", borderRadius: "0.5rem", marginBottom: "1rem" }} />
           <div className="shimmer" style={{ height: "12rem", borderRadius: "0.75rem" }} />
+        </div>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div style={pageWrap}>
+        <Navbar />
+        <div style={{ ...container, display: "flex", alignItems: "center", justifyContent: "center", height: "80vh" }}>
+          <p style={{ color: "rgba(255,255,255,0.5)" }}>Please log in to view this event.</p>
         </div>
       </div>
     );
@@ -552,7 +579,7 @@ export default function ParticipantEventDetailPage() {
                 <Send size={18} color="#e8503a" /> Submit Project
               </h2>
               <p style={{ marginBottom: "1.25rem", fontSize: "0.875rem", color: "rgba(255,255,255,0.4)" }}>
-                Add your project links (GitHub, demo, video, etc.)
+                Add your project links (GitHub, demo, video) and/or upload PDF documents.
               </p>
               {!dashboard?.team ? (
                 <p style={{ fontSize: "0.875rem", color: "rgba(250,204,21,0.7)" }}>
@@ -568,7 +595,7 @@ export default function ParticipantEventDetailPage() {
                     </select>
                   </div>
                   <div>
-                    <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>Attachment URLs *</label>
+                    <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>Project Links</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                       {attachments.map((url, i) => (
                         <div key={i} style={{ display: "flex", gap: "0.5rem" }}>
@@ -599,6 +626,55 @@ export default function ParticipantEventDetailPage() {
                       <Plus size={14} /> Add another link
                     </button>
                   </div>
+
+                  {/* PDF uploads */}
+                  <div>
+                    <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>
+                      PDF Documents (optional)
+                    </label>
+                    <p style={{ margin: "0 0 0.5rem", fontSize: "0.75rem", color: "rgba(255,255,255,0.35)" }}>
+                      Upload report/slides as PDF. Files are hosted by the organizer and shared with judges.
+                    </p>
+                    {pdfFiles.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "0.5rem" }}>
+                        {pdfFiles.map((file, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.5rem 0.75rem", borderRadius: "0.5rem", background: "rgba(255,255,255,0.04)", border: "1px solid #1e1e1e" }}>
+                            <FileText size={16} color="#e8503a" />
+                            <span style={{ flex: 1, fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {file.name} · {(file.size / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setPdfFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                              style={{ display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "0.375rem", border: "none", background: "transparent", color: "rgba(255,255,255,0.3)", cursor: "pointer" }}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <label
+                      style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem", fontSize: "0.75rem", color: "#e8503a", cursor: "pointer" }}
+                    >
+                      <Upload size={14} /> Add PDF file
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        multiple
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const picked = Array.from(e.target.files ?? []).filter((f) => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+                          if (picked.length !== (e.target.files?.length ?? 0)) {
+                            toast.error("Only PDF files are allowed");
+                          }
+                          setPdfFiles((prev) => [...prev, ...picked]);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+
                   <Button type="submit" variant="primary" size="lg" fullWidth loading={submitting}>
                     <Send size={16} /> Submit Project
                   </Button>

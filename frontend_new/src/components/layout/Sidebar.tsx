@@ -36,7 +36,6 @@ function getNavItems(role: string | null, eventId?: string, profile?: { event_id
     const base: NavItem[] = [
       { label: "Events", href: "/organizer/events", icon: <Calendar size={16} /> },
       { label: "AI Create", href: "/organizer/ai-create", icon: <Bot size={16} /> },
-      { label: "AI Events", href: "/organizer/ai-events", icon: <Star size={16} /> },
     ];
     if (eventId) {
       base.push(

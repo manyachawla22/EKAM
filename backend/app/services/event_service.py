@@ -90,12 +90,32 @@ async def update_event_service(
         if str(event.organizer_id) != str(current_user.id):
             raise HTTPException(status_code=403, detail="Cannot modify another organizer's event")
 
+    previous_stage = event.stage
+
     update_data = event_data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(event, key, value)
 
     await db.commit()
     await db.refresh(event, attribute_names=["rounds"])
+
+    # When the organizer advances the stage manually, fire the stage email
+    # pipeline (results announcements, certificate distribution, etc.). Without
+    # this, only the approval-driven path triggered emails, so manual stage
+    # changes silently skipped certificates/announcements. Best-effort.
+    if event.stage != previous_stage:
+        try:
+            from app.email_triggers import trigger_stage_emails
+
+            await trigger_stage_emails(
+                event=event,
+                new_stage=event.stage,
+                db=db,
+                requested_by=str(getattr(current_user, "id", "organizer")),
+            )
+        except Exception as exc:
+            print(f"[event_service] stage email trigger failed: {exc}")
+
     return event
 
 

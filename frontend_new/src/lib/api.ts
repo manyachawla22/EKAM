@@ -16,6 +16,7 @@ import type {
   Evaluation,
   Report,
   Theme,
+  RubricCriterion,
   TeamPreference,
   ParticipantDashboard,
   JudgeDashboard,
@@ -75,6 +76,13 @@ export async function getAuthHeaders(): Promise<HeadersInit> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${ekam}`,
     };
+  }
+  // Make sure Firebase has restored any persisted session before reading
+  // currentUser, so requests fired during app startup still carry a token.
+  try {
+    await auth.authStateReady();
+  } catch {
+    // Older SDKs without authStateReady — fall through.
   }
   const user = auth.currentUser;
   if (!user) {
@@ -226,6 +234,28 @@ export async function loginUser(body: LoginBody): Promise<User> {
   // the backend can authenticate via Firebase and re-issue a fresh session.
   setEkamToken(null);
 
+  // Wait for Firebase to finish restoring any persisted session before we
+  // read currentUser. Without this, a login fired during app bootstrap can
+  // race ahead of session restoration and go out with no token.
+  try {
+    await auth.authStateReady();
+  } catch {
+    // Older SDKs without authStateReady — fall through.
+  }
+
+  const fbUser = auth.currentUser;
+  if (!fbUser) {
+    // No Firebase session to authenticate with. Bail out cleanly instead of
+    // firing an unauthenticated request that the backend rejects with the
+    // confusing "Not authenticated" (401).
+    throw new Error("No active Firebase session");
+  }
+
+  // Grab a fresh ID token and attach it explicitly to this request. Relying on
+  // getAuthHeaders()'s global lookup is fragile: it silently drops the header
+  // if getIdToken() throws, which then surfaces as a 401 "Not authenticated".
+  const idToken = await fbUser.getIdToken(/* forceRefresh */ true);
+
   // /auth/login accepts an optional { name, role } body:
   //   - On signup we want to pass the user's chosen role.
   //   - On regular login we leave them omitted and the backend keeps the
@@ -245,6 +275,7 @@ export async function loginUser(body: LoginBody): Promise<User> {
     organization?: string | null;
   }>("/auth/login", {
     method: "POST",
+    headers: { Authorization: `Bearer ${idToken}` },
     body: JSON.stringify(payload),
   });
 
@@ -395,6 +426,26 @@ export async function listSubmissions(roundId: string): Promise<Submission[]> {
   return apiFetch<Submission[]>(`/submissions/${roundId}`);
 }
 
+// Fetch a single submission (with its attachments) by id — used by the judge
+// evaluate page so the project links/PDFs are always available.
+export async function getSubmission(submissionId: string): Promise<Submission> {
+  return apiFetch<Submission>(`/submissions/by-id/${submissionId}`);
+}
+
+export interface SubmissionFileResponse {
+  url: string;       // public URL (ngrok or request host) to the stored PDF
+  filename: string;  // stored name on disk
+  name: string;      // original display name
+}
+
+// Upload a single PDF for a submission. Returns a public URL that the
+// participant then includes in the submission's `attachments` list.
+export async function uploadSubmissionFile(
+  file: File
+): Promise<SubmissionFileResponse> {
+  return uploadCsv<SubmissionFileResponse>("/submissions/upload-file", file);
+}
+
 // ─── EVALUATIONS ──────────────────────────────────────────────────────────────
 
 export async function submitEvaluation(
@@ -509,6 +560,12 @@ export async function listReports(eventId: string): Promise<Report[]> {
   return apiFetch<Report[]>(`/reports/${eventId}`);
 }
 
+// Generate the rich event summary report (standings, charts, participant
+// performance). The backend stores it and emails it to the organizer.
+export async function generateEventReport(eventId: string): Promise<Report> {
+  return apiFetch<Report>(`/reports/${eventId}/generate`, { method: "POST" });
+}
+
 // ─── AI ───────────────────────────────────────────────────────────────────────
 
 export async function aiChat(
@@ -532,13 +589,6 @@ export async function aiDeploy(
   });
 }
 
-export async function listAIEvents(): Promise<Event[]> {
-  return apiFetch<Event[]>("/ai/events");
-}
-
-export async function getAIEvent(hash: string): Promise<EventConfig> {
-  return apiFetch<EventConfig>(`/ai/events/${hash}`);
-}
 
 // ─── APPROVALS ────────────────────────────────────────────────────────────────
 
@@ -764,6 +814,33 @@ export async function proposeStageTransition(
   );
 }
 
+// ─── WINNERS ──────────────────────────────────────────────────────────────────
+
+export interface WinnerEntry {
+  rank: number;
+  team_id: string;
+  team_name?: string;
+  score?: number;
+  prize?: string;
+}
+
+export async function getWinnersProposal(
+  eventId: string,
+  topN: number = 3
+): Promise<{ round_id: string | null; winners: WinnerEntry[] }> {
+  return apiFetch(`/events/${eventId}/winners/proposal?top_n=${topN}`);
+}
+
+export async function confirmWinners(
+  eventId: string,
+  winners: WinnerEntry[]
+): Promise<{ message: string; report_id: string; winners: WinnerEntry[] }> {
+  return apiFetch(`/events/${eventId}/winners`, {
+    method: "POST",
+    body: JSON.stringify({ winners }),
+  });
+}
+
 // ─── THEMES ───────────────────────────────────────────────────────────────────
 
 export async function listThemes(eventId: string): Promise<Theme[]> {
@@ -795,6 +872,42 @@ export async function updateTeamTheme(
   return apiFetch<Team>(`/teams/${eventId}/${teamId}/theme`, {
     method: "PUT",
     body: JSON.stringify({ theme_id: themeId }),
+  });
+}
+
+// ─── RUBRICS ──────────────────────────────────────────────────────────────────
+
+export async function listRoundRubric(roundId: string): Promise<RubricCriterion[]> {
+  return apiFetch<RubricCriterion[]>(`/rubrics/round/${roundId}`);
+}
+
+export async function addRubricCriterion(
+  roundId: string,
+  body: { name: string; description?: string; max_score: number; position?: number }
+): Promise<RubricCriterion> {
+  return apiFetch<RubricCriterion>(`/rubrics/round/${roundId}`, {
+    method: "POST",
+    body: JSON.stringify({ position: 0, ...body }),
+  });
+}
+
+export async function updateRubricCriterion(
+  criterionId: string,
+  body: { name?: string; description?: string; max_score?: number; position?: number }
+): Promise<RubricCriterion> {
+  return apiFetch<RubricCriterion>(`/rubrics/criterion/${criterionId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteRubricCriterion(criterionId: string): Promise<void> {
+  return apiFetch<void>(`/rubrics/criterion/${criterionId}`, { method: "DELETE" });
+}
+
+export async function generateRoundRubric(roundId: string): Promise<RubricCriterion[]> {
+  return apiFetch<RubricCriterion[]>(`/rubrics/round/${roundId}/generate`, {
+    method: "POST",
   });
 }
 

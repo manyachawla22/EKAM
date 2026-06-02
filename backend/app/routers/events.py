@@ -3,14 +3,15 @@ EKAM Events Router
 """
 
 from uuid import UUID
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, status, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 
-from app.middleware.auth import require_actor_type, get_current_actor
+from app.middleware.auth import require_actor_type, get_current_actor, require_event_access
 from app.core.auth_context import AuthContext
 
 from app.schemas.event import (
@@ -26,6 +27,19 @@ from app.services.event_service import (
     update_event_service,
     delete_event_service
 )
+from app.services.winner_service import propose_winners, finalize_winners
+
+
+class WinnerEntry(BaseModel):
+    rank: int
+    team_id: UUID
+    team_name: Optional[str] = None
+    score: Optional[float] = None
+    prize: Optional[str] = None
+
+
+class WinnersConfirm(BaseModel):
+    winners: List[WinnerEntry]
 
 router = APIRouter(
     prefix="/events",
@@ -62,6 +76,42 @@ async def list_events(
         db,
         auth.entity
     )
+
+
+@router.get(
+    "/{event_id}/winners/proposal",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def get_winners_proposal(
+    event_id: UUID,
+    top_n: int = 3,
+    db: AsyncSession = Depends(get_db),
+):
+    """Top-N teams (by score) proposed as winners for the organizer to confirm."""
+    return await propose_winners(db, event_id, top_n=top_n)
+
+
+@router.post(
+    "/{event_id}/winners",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def confirm_winners(
+    event_id: UUID,
+    body: WinnersConfirm,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm winners → send announcement + prize/next-steps + certificates."""
+    winners = [w.model_dump() for w in body.winners]
+    for w in winners:
+        w["team_id"] = str(w["team_id"])
+    return await finalize_winners(db, event_id, winners, requested_by=str(auth.actor_id))
 
 
 @router.get("/{event_id}", response_model=Event)

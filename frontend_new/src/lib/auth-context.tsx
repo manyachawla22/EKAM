@@ -67,7 +67,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       setProfile(backendUser);
     } catch (err) {
-      console.error("Failed to sync profile with backend:", err);
+      // Login failed (expired/revoked Firebase session, backend rejected the
+      // token, etc.). Clear any stale EKAM token and treat the user as logged
+      // out rather than leaving a half-authenticated state that keeps retrying.
+      console.warn("Could not sync profile with backend; treating as signed out:", err);
+      setEkamToken(null);
       setProfile(null);
     }
   }, []);

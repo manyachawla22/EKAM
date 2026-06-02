@@ -8,11 +8,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import groq as _groq
 from groq import Groq
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from pydantic import BaseModel
+from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import get_db
+from app.core.auth_context import AuthContext
 from app.core.utils import generate_event_hash
+from app.middleware.auth import require_actor_type
+from app.models.event import (
+    Event as EventModel,
+    EventStage,
+    EventStatus,
+    TeamFormationType,
+    Round as RoundModel,
+    RoundStatus,
+)
+from app.models.judge import Judge as JudgeModel
+from app.models.rubric import RubricCriterion
 from app.services.csv_service import parse_participant_csv, parse_judge_csv
 
 router = APIRouter()
@@ -969,43 +984,168 @@ async def chat(request: ChatRequest):
     }
 
 
-@router.post("/deploy")
-async def deploy_event(request: SaveConfigRequest):
-    config = request.event_config.copy()
-    event_id = request.event_id or config.get("event_id") or str(uuid.uuid4())
-    config["event_id"] = event_id
+def _coerce_uuid(value):
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
-    short_hash = generate_event_hash(event_id)
+
+async def _materialize_rounds_judges_rubric(
+    db: AsyncSession,
+    event: EventModel,
+    config: dict,
+) -> None:
+    """First-deploy setup: create the event's rounds, seed each round's rubric
+    from the AI scoring criteria, and invite any judges that have an email."""
+    # ── Rounds ──
+    rounds_cfg = config.get("rounds") or []
+    created: list[tuple[RoundModel, dict]] = []
+    if rounds_cfg:
+        for idx, r in enumerate(rounds_cfg):
+            rname = r.get("round_name") or r.get("name") or f"Round {idx + 1}"
+            rnd = RoundModel(event_id=event.id, name=str(rname)[:120], status=RoundStatus.upcoming)
+            db.add(rnd)
+            created.append((rnd, r))
+    else:
+        rnd = RoundModel(event_id=event.id, name="Round 1", status=RoundStatus.upcoming)
+        db.add(rnd)
+        created.append((rnd, {}))
+    await db.commit()
+    for rnd, _ in created:
+        await db.refresh(rnd)
+
+    # ── Rubric per round (from scoring.criteria when present) ──
+    for rnd, r in created:
+        criteria = ((r.get("scoring") or {}).get("criteria")) or []
+        rows = []
+        for pos, c in enumerate(criteria):
+            cname = str(c.get("name") or "").strip()
+            if not cname:
+                continue
+            max_score = c.get("max_score") or c.get("weight") or 10
+            rows.append(
+                RubricCriterion(
+                    round_id=rnd.id,
+                    name=cname[:120],
+                    description=(str(c.get("description") or "")[:300]) or None,
+                    max_score=float(max_score),
+                    position=pos,
+                )
+            )
+        if rows:
+            db.add_all(rows)
+    await db.commit()
+
+    # ── Judges (only those with a usable email) ──
+    judges_cfg = ((config.get("judging_panel") or {}).get("judges")) or []
+    for j in judges_cfg:
+        email = str(j.get("email") or "").strip()
+        if not email or "@" not in email:
+            continue
+        existing = (
+            await db.execute(
+                select(JudgeModel).where(
+                    JudgeModel.event_id == event.id,
+                    JudgeModel.email == email,
+                )
+            )
+        ).scalars().first()
+        if existing:
+            continue
+        db.add(
+            JudgeModel(
+                event_id=event.id,
+                name=j.get("name") or email.split("@")[0],
+                email=email,
+                institution=j.get("company") or j.get("institution") or None,
+                expertise=j.get("expertise") or [],
+            )
+        )
+    await db.commit()
+
+
+@router.post("/deploy")
+async def deploy_event(
+    request: SaveConfigRequest,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deploy an AI-designed event as a real SQL event.
+
+    Idempotent: re-deploying with the same event_id updates the existing event
+    (event-level fields only — rounds/judges/rubric are materialized once on the
+    first deploy so later manual edits are preserved).
+    """
+    config = request.event_config.copy()
+
+    event_uuid = _coerce_uuid(request.event_id or config.get("event_id")) or uuid.uuid4()
+    config["event_id"] = str(event_uuid)
+    short_hash = generate_event_hash(str(event_uuid))
     config["hash"] = short_hash
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    config.setdefault("status", {})
-    config["status"]["current_phase"] = "ready"
-    config["status"]["updated_at"] = now_iso
-    config["status"].setdefault("created_at", now_iso)
+    core = config.get("core") or {}
+    participants = config.get("participants") or {}
+    team = participants.get("team") or {}
+    capacity = participants.get("capacity") or {}
 
-    filepath = _save_config(event_id, config)
+    name = core.get("name") or "Untitled Event"
+    etype = core.get("event_type") or "hackathon"
+    description = core.get("description") or ""
+    try:
+        min_size = int(team.get("min_size") or 1)
+        max_size = int(team.get("max_size") or 4)
+    except (TypeError, ValueError):
+        min_size, max_size = 1, 4
+    try:
+        max_participants = int(capacity.get("max_participants") or 0)
+    except (TypeError, ValueError):
+        max_participants = 0
 
-    # Upsert into index (newest first)
-    index = [e for e in _load_index() if e.get("event_id") != event_id]
-    index.insert(0, {
-        "event_id": event_id,
-        "hash": short_hash,
-        "name": config.get("core", {}).get("name", "Untitled Event"),
-        "type": config.get("core", {}).get("event_type", "hackathon"),
-        "mode": config.get("core", {}).get("mode", ""),
-        "theme": config.get("core", {}).get("theme", ""),
-        "description": config.get("core", {}).get("description", ""),
-        "deployed_at": now_iso,
-        "judges_count": len((config.get("judging_panel") or {}).get("judges") or []),
-        "rounds_count": len(config.get("rounds") or []),
-        "max_teams": (config.get("participants") or {}).get("capacity", {}).get("max_teams", 0),
-        "max_participants": (config.get("participants") or {}).get("capacity", {}).get("max_participants", 0),
-        "prize_pool": (config.get("prizes") or {}).get("total_pool", ""),
-    })
-    _save_index(index)
+    organizer_id = auth.entity.id
 
-    return {"success": True, "event_id": event_id, "hash": short_hash, "file_path": filepath}
+    existing = (
+        await db.execute(select(EventModel).where(EventModel.id == event_uuid))
+    ).scalars().first()
+    is_new = existing is None
+
+    if existing:
+        if str(existing.organizer_id) != str(organizer_id):
+            raise HTTPException(
+                status_code=403,
+                detail="This event belongs to another organizer.",
+            )
+        existing.name = name
+        existing.type = etype
+        existing.description = description
+        existing.min_team_size = min_size
+        existing.max_team_size = max_size
+        existing.max_participants = max_participants
+        event = existing
+    else:
+        event = EventModel(
+            id=event_uuid,
+            organizer_id=organizer_id,
+            name=name,
+            hash=short_hash,
+            description=description,
+            type=etype,
+            status=EventStatus.active,
+            stage=EventStage.registration,
+            team_formation_type=TeamFormationType.platform_generated,
+            min_team_size=min_size,
+            max_team_size=max_size,
+            max_participants=max_participants,
+        )
+        db.add(event)
+
+    await db.commit()
+    await db.refresh(event)
+
+    if is_new:
+        await _materialize_rounds_judges_rubric(db, event, config)
+
+    return {"success": True, "event_id": str(event.id), "hash": short_hash}
 
 
 @router.get("/events")

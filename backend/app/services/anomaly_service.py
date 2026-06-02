@@ -23,10 +23,21 @@ from sklearn.preprocessing import RobustScaler
 
 from app.models.anomaly import Anomaly, AnomalyType
 from app.models.event import Event, Round
+from app.models.judge import Judge
 from app.models.notification import NotificationType
 from app.models.report import Report as ReportModel
 from app.models.submission import Evaluation, Submission, SubmissionStatus
+from app.core.config import settings
+from app.services.email_service import send_direct_email
 from app.services.notification_service import create_notification
+
+
+# When there are too few evaluations for IsolationForest to be meaningful we
+# fall back to a simple panel-disagreement rule so blatant outliers (e.g. one
+# judge gives 0, another gives 95) still get flagged.
+_MIN_POINTS_FOR_ML = 4
+_PANEL_SPREAD_THRESHOLD = 30.0   # max-min across a submission's scores
+_PANEL_DEVIATION_THRESHOLD = 25.0  # |this score - panel average|
 
 
 def _evaluation_score(evaluation: Evaluation) -> float | None:
@@ -299,8 +310,16 @@ async def _create_live_anomaly_notification(
     )
     event = event_result.scalars().first()
 
+    # Resolve the judge whose evaluation was flagged so we can alert them
+    # directly — they are the ones who can review and correct the score.
+    judge_result = await db.execute(
+        select(Judge).where(Judge.id == evaluation.judge_id)
+    )
+    judge = judge_result.scalars().first()
+
     await db.commit()
 
+    # Notify the organizer (in-app) — keeps the existing oversight behaviour.
     if event and event.organizer_id:
         await create_notification(
             db=db,
@@ -310,6 +329,67 @@ async def _create_live_anomaly_notification(
             message=description,
             notification_type=NotificationType.alert,
         )
+
+    # Notify the judge (in-app + email) so they can re-check and modify scores.
+    if judge:
+        submission_id = anomaly_payload["submission_id"]
+        review_link = (
+            f"{settings.FRONTEND_URL.rstrip('/')}/judge/evaluate/{submission_id}"
+        )
+
+        await create_notification(
+            db=db,
+            event_id=str(event_id),
+            user_id=str(judge.id),
+            title="Please review a flagged evaluation",
+            message=(
+                "One of your evaluations was flagged as a possible scoring "
+                "anomaly. Please review and update the score if needed."
+            ),
+            notification_type=NotificationType.action_required,
+            action_link=review_link,
+        )
+
+        if getattr(judge, "email", None):
+            event_name = event.name if event else "your event"
+            judge_name = judge.name or judge.email.split("@")[0]
+
+            subject = f"[EKAM] Scoring anomaly flagged — {event_name}"
+            body_text = (
+                f"Hello {judge_name},\n\n"
+                f"Our automated scoring review (IsolationForest ML model) "
+                f"flagged one of your evaluations for \"{event_name}\" as a "
+                f"possible anomaly.\n\n"
+                f"  Your score:    {anomaly_payload['score']:.1f}\n"
+                f"  Panel average: {anomaly_payload['panel_average']:.1f}\n"
+                f"  Your average:  {anomaly_payload['judge_average']:.1f}\n\n"
+                f"This does not mean the score is wrong — please review the "
+                f"submission and update your score if appropriate:\n\n"
+                f"  {review_link}\n\n"
+                f"Thank you,\nTeam EKAM"
+            )
+            body_html = (
+                f"<p>Hello {judge_name},</p>"
+                f"<p>Our automated scoring review (IsolationForest ML model) "
+                f"flagged one of your evaluations for "
+                f"<strong>{event_name}</strong> as a possible anomaly.</p>"
+                f"<ul>"
+                f"<li><strong>Your score:</strong> {anomaly_payload['score']:.1f}</li>"
+                f"<li><strong>Panel average:</strong> {anomaly_payload['panel_average']:.1f}</li>"
+                f"<li><strong>Your average:</strong> {anomaly_payload['judge_average']:.1f}</li>"
+                f"</ul>"
+                f"<p>This does not mean the score is wrong — please review the "
+                f"submission and update your score if appropriate:</p>"
+                f"<p><a href=\"{review_link}\">Review this evaluation</a></p>"
+                f"<p>Thank you,<br/>Team EKAM</p>"
+            )
+
+            await send_direct_email(
+                to=judge.email,
+                subject=subject,
+                body_html=body_html,
+                body_text=body_text,
+            )
 
     return anomaly
 
@@ -399,6 +479,61 @@ async def _create_event_report(
     return report
 
 
+def _panel_anomaly_payload(
+    points: list[dict],
+    evaluation: Evaluation,
+) -> dict | None:
+    """
+    Lightweight, non-ML anomaly check for a single evaluation against the other
+    scores on the SAME submission. Used when there aren't enough evaluations for
+    IsolationForest. Returns an anomaly payload (same shape the notifier expects)
+    or None.
+    """
+    target_score = _evaluation_score(evaluation)
+    if target_score is None:
+        return None
+
+    submission_scores = [
+        point["score"]
+        for point in points
+        if point["submission"].id == evaluation.submission_id
+    ]
+
+    # Need at least two judges on this submission to talk about disagreement.
+    if len(submission_scores) < 2:
+        return None
+
+    panel_average = mean(submission_scores)
+    spread = max(submission_scores) - min(submission_scores)
+    residual_from_panel = target_score - panel_average
+
+    judge_scores = [
+        point["score"]
+        for point in points
+        if point["evaluation"].judge_id == evaluation.judge_id
+    ]
+    judge_average = mean(judge_scores) if judge_scores else target_score
+
+    is_anomaly = (
+        spread >= _PANEL_SPREAD_THRESHOLD
+        or abs(residual_from_panel) >= _PANEL_DEVIATION_THRESHOLD
+    )
+    if not is_anomaly:
+        return None
+
+    return {
+        "evaluation_id": _uuid_str(evaluation.id),
+        "submission_id": _uuid_str(evaluation.submission_id),
+        "judge_id": _uuid_str(evaluation.judge_id),
+        "score": float(target_score),
+        "panel_average": float(panel_average),
+        "judge_average": float(judge_average),
+        "residual_from_panel": float(residual_from_panel),
+        "panel_spread": float(spread),
+        "model": "panel_disagreement",
+    }
+
+
 async def analyze_evaluation(
     db: AsyncSession,
     event_id: UUID | str,
@@ -440,8 +575,19 @@ async def analyze_evaluation(
             detail="No evaluations found for the requested event",
         )
 
-    if len(points) < 4:
+    if len(points) < _MIN_POINTS_FOR_ML:
+        # Not enough data for IsolationForest.
         if evaluation is not None:
+            # Live flow: still catch blatant panel disagreement on this
+            # submission (e.g. 0 vs 95) using a simple statistical rule.
+            panel_payload = _panel_anomaly_payload(points, evaluation)
+            if panel_payload is not None:
+                return await _create_live_anomaly_notification(
+                    db=db,
+                    event_id=event_id,
+                    evaluation=evaluation,
+                    anomaly_payload=panel_payload,
+                )
             return None
 
         raise HTTPException(
