@@ -16,10 +16,10 @@ from app.services.anomaly_service import analyze_evaluation
 from app.services.participant_performance_report_service import (
     generate_participant_performance_report_service,
 )
+from app.services.plagiarism_service import detect_plagiarism_service
 from app.services.report_service import (
     create_report_service,
     list_reports_service,
-    generate_event_summary_report_service,
 )
 
 router = APIRouter(
@@ -69,7 +69,7 @@ async def detect_anomaly_scores(
 
 
 @router.post(
-    "/{event_id}/generate",
+    "/detect-plagiarism/{event_id}",
     response_model=ReportSchema,
     status_code=status.HTTP_201_CREATED,
     dependencies=[
@@ -77,16 +77,15 @@ async def detect_anomaly_scores(
         Depends(require_event_access("event_id")),
     ],
 )
-async def generate_event_summary(
+async def detect_plagiarism(
     event_id: UUID,
-    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    threshold: float = 0.8,
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate the rich event summary report, store it, and email the organizer."""
-    return await generate_event_summary_report_service(
+    return await detect_plagiarism_service(
         db=db,
-        event_id=event_id,
-        requested_by=str(auth.actor_id),
+        event_id=str(event_id),
+        threshold=threshold,
     )
 
 
