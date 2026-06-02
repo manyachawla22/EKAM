@@ -52,39 +52,70 @@ def _today() -> str:
 
 def _sec1_system() -> str:
     today = _today()
-    return f"""Extract core event details, timeline, and participant structure from the organizer's message.
-Return ONLY valid JSON — no markdown, no prose.
-Include ONLY fields you can confidently extract. Omit unknown fields entirely.
-Extract team formation constraints if mentioned.
-Allowed team matching constraints:
-- gender_diversity
-- avoid_same_college
-- balance_experience
-- keep_friends_together
-- separate_participants
+    return f"""You are extracting structured event configuration from an organizer's event description.
 
-DATE MATH (today = {today}, timezone = Asia/Kolkata +05:30):
-  "opens now" / "today" → {today}T00:00:00+05:30
-  "in N days" → add N days to {today}
-  "March 15 9 AM IST" → 2026-03-15T09:00:00+05:30
+Return ONLY valid JSON.
+No markdown.
+No prose.
+No placeholders.
+No invented values.
 
-DO NOT extract the event name/title — that is always asked separately.
+Core rules:
+- Extract ONLY what is explicitly stated or can be directly inferred with high confidence.
+- If a value is missing, OMIT it entirely.
+- Do NOT invent judges, prizes, dates, venue, contact details, tracks, or constraints.
+- Event name/title must NOT be extracted here. It is collected separately.
+- Team-matching constraints must use ONLY these supported types:
+  - gender_diversity
+  - avoid_same_college
+  - balance_experience
+  - required_skill
+- Do NOT output unsupported constraint types.
 
-OUTPUT SCHEMA (include only present fields):
+DATE RULES (today = {today}, timezone = Asia/Kolkata +05:30):
+- "today" / "now" → {today}T00:00:00+05:30
+- "in N days" → compute relative to {today}
+- If the user gives no date, omit the date field.
+
+OUTPUT SCHEMA (include only fields you confidently know):
 {{
   "core": {{
-    "theme": "2-4 keyword phrase only",
+    "theme": "short phrase",
     "event_type": "hackathon|case_competition|quiz|ideathon|coding_contest",
     "mode": "online|offline|hybrid",
-    "description": "1-2 sentence auto-generated summary",
+    "description": "short factual summary",
     "tagline": "",
-    "venue": {{"name":"","city":"","state":"","country":""}},
-    "contact": {{"email":"","phone":""}}
+    "venue": {{
+      "name": "",
+      "city": "",
+      "state": "",
+      "country": ""
+    }},
+    "contact": {{
+      "email": "",
+      "phone": ""
+    }},
+    "tracks": [
+      {{
+        "track_id": "t1",
+        "name": "AI/ML",
+        "description": ""
+      }}
+    ]
   }},
   "timeline": {{
     "timezone": "Asia/Kolkata",
-    "registration": {{"opens_at":"ISO8601+05:30","closes_at":"ISO8601+05:30"}},
-    "key_dates": [{{"name":"Event Start","date":"ISO8601+05:30","description":""}}]
+    "registration": {{
+      "opens_at": "ISO8601+05:30",
+      "closes_at": "ISO8601+05:30"
+    }},
+    "key_dates": [
+      {{
+        "name": "Event Start",
+        "date": "ISO8601+05:30",
+        "description": ""
+      }}
+    ]
   }},
   "participants": {{
     "model": "individual|teams",
@@ -102,15 +133,27 @@ OUTPUT SCHEMA (include only present fields):
         }},
         {{
           "type": "balance_experience"
+        }},
+        {{
+          "type": "required_skill",
+          "skill": "python",
+          "min_count": 1
         }}
       ]
     }},
-    "team": {{"min_size":4,"max_size":4}},
-    "capacity": {{"max_teams":50}},
-    "eligibility": {{"open_to":["students"]}}
+    "team": {{
+      "min_size": 4,
+      "max_size": 4
+    }},
+    "capacity": {{
+      "max_teams": 50,
+      "max_participants": 200
+    }},
+    "eligibility": {{
+      "open_to": ["students"]
+    }}
   }}
 }}"""
-
 
 def _sec2_system() -> str:
     return """Extract rounds and judging panel from the organizer's message.
@@ -192,34 +235,194 @@ OUTPUT SCHEMA:
 
 def _followup_system() -> str:
     today = _today()
-    return f"""You extract a specific event field from an organizer's short reply.
-Return ONLY valid JSON — no markdown, no prose.
+    return f"""You extract ONE specific missing event field from a short organizer reply.
+
+Return ONLY valid JSON.
+No markdown.
+No prose.
+No placeholders.
+No invented values.
+
 Today = {today}, timezone = Asia/Kolkata (+05:30).
 
-DATE MATH: "in N days" = {today} + N days | "today/now" = {today}T00:00:00+05:30
+General rules:
+- You will receive:
+  - Field: <field_name>
+  - Question asked
+  - Current config
+  - User reply
+- Extract ONLY the requested field.
+- Wrap it in the correct top-level structure.
+- If the reply does not actually answer the field, return {{}}.
+- If the user says skip / none / not sure, return {{}}.
+- Do NOT invent dates, judges, prizes, venue, or contact info.
 
-The context will say "Field: <key>" — extract ONLY that field and wrap it in the correct top-level key.
+DATE RULES:
+- "today" / "now" → {today}T00:00:00+05:30
+- "in N days" → compute relative to {today}
+- If ambiguous, omit.
 
-EXAMPLES:
-You will be told which field is being answered. Extract ONLY that field and return
-the matching JSON structure. For example:
+SUPPORTED FIELD OUTPUTS:
 
-Field: venue → reply "IIT Delhi, Delhi" → {{"core":{{"venue":{{"name":"IIT Delhi","city":"Delhi","state":"Delhi","country":"India"}}}}}}
-Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"email":"abc@gmail.com","phone":"9876543210"}}}}}}
-Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
-Field: teams → reply "50 teams 4 each" → {{"participants":{{"capacity":{{"max_teams":50}},"team":{{"min_size":4,"max_size":4}}}}}}
-Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
-Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
-Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
-{{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
-Field: tracks → reply "AI, Web3, Climate Tech" → {{"core":{{"tracks":[{{"track_id":"t1","name":"AI","description":""}},{{"track_id":"t2","name":"Web3","description":""}},{{"track_id":"t3","name":"Climate Tech","description":""}}]}}}}
-Field: team_constraints → reply "at least 1 girl per team, members from different colleges" → {{"participants":{{"team_formation_constraints":"at least 1 girl per team, members from different colleges"}}}}
+Field: name
+{{
+  "core": {{
+    "name": "HackFest 2026"
+  }}
+}}
 
-PRIZE RULES:
-- Convert shorthand amounts: "10k"→"₹10,000", "1L"/"1,00,000"→"₹1,00,000", "5000"→"₹5,000"
-- total_pool = sum of ALL prizes given. If only distribution given, sum them.
-- Always wrap inside {{"prizes": {{...}}}} — never return prizes fields at the top level.
-- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}"""
+Field: theme
+{{
+  "core": {{
+    "theme": "AI for Sustainability"
+  }}
+}}
+
+Field: mode
+{{
+  "core": {{
+    "mode": "online"
+  }}
+}}
+
+Field: venue
+{{
+  "core": {{
+    "venue": {{
+      "name": "IIT Delhi",
+      "city": "Delhi",
+      "state": "Delhi",
+      "country": "India"
+    }}
+  }}
+}}
+
+Field: contact
+{{
+  "core": {{
+    "contact": {{
+      "email": "abc@gmail.com",
+      "phone": "9876543210"
+    }}
+  }}
+}}
+
+Field: registration
+{{
+  "timeline": {{
+    "registration": {{
+      "opens_at": "{today}T00:00:00+05:30",
+      "closes_at": "{today}T00:00:00+05:30"
+    }}
+  }}
+}}
+
+Field: tracks
+{{
+  "core": {{
+    "tracks": [
+      {{"track_id":"t1","name":"AI","description":""}},
+      {{"track_id":"t2","name":"Web3","description":""}}
+    ]
+  }}
+}}
+
+Field: teams
+{{
+  "participants": {{
+    "capacity": {{
+      "max_teams": 50,
+      "max_participants": 200
+    }},
+    "team": {{
+      "min_size": 4,
+      "max_size": 4
+    }},
+    "model": "teams",
+    "individual_registration_allowed": false
+  }}
+}}
+
+Field: team_constraints
+Use ONLY these supported constraint types:
+- gender_diversity
+- avoid_same_college
+- balance_experience
+- required_skill
+
+Example output:
+{{
+  "participants": {{
+    "team_matching": {{
+      "enabled": true,
+      "constraints": [
+        {{"type":"gender_diversity","min_per_team":1}},
+        {{"type":"avoid_same_college"}},
+        {{"type":"required_skill","skill":"python","min_count":1}}
+      ]
+    }},
+    "team_formation_constraints": "at least 1 girl per team, different colleges, one python person"
+  }}
+}}
+
+Field: rounds
+{{
+  "rounds": [
+    {{
+      "round_id": "round_1",
+      "round_number": 1,
+      "round_name": "Idea Submission",
+      "type": "online_submission",
+      "deliverables": [
+        {{"name":"Idea Deck","type":"file","file_types":["pdf"],"required":true}}
+      ],
+      "scoring": {{
+        "criteria": [
+          {{"criterion_id":"c1","name":"Innovation","weight":50,"max_score":50,"min_score":0}}
+        ]
+      }},
+      "advancement": {{"method":"top_n","value":10,"qualifies_to_round_id":"round_2"}},
+      "is_final_round": false
+    }}
+  ]
+}}
+
+Field: judges
+CRITICAL:
+- Only output judges if the reply includes REAL human names.
+- If the user gives only a count like "3 judges", return {{}}.
+Example:
+{{
+  "judging_panel": {{
+    "judges": [
+      {{
+        "judge_id":"judge_1",
+        "name":"Aarav Mehta",
+        "company":"Google",
+        "expertise":["AI"]
+      }}
+    ]
+  }}
+}}
+
+Field: prizes
+CRITICAL:
+- Only output prizes if the reply explicitly gives prize information.
+- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}.
+- Always wrap inside "prizes".
+
+Example:
+{{
+  "prizes": {{
+    "currency":"INR",
+    "total_pool":"₹10,000",
+    "distribution":[
+      {{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},
+      {{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}
+    ],
+    "special_awards":[]
+  }}
+}}"""
 
 
 # ── Skip detection ─────────────────────────────────────────────────────────────
@@ -474,6 +677,244 @@ def _parse_json(raw: str) -> dict:
             if depth == 0:
                 return json.loads(text[start: i + 1], object_pairs_hook=_merge_pairs)
     raise ValueError(f"Cannot parse JSON: {text[:300]}")
+
+def _normalize_event_type(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+
+    mapping = {
+        "hackathon": "hackathon",
+        "hack": "hackathon",
+        "ideathon": "ideathon",
+        "ideaathon": "ideathon",
+        "case competition": "case_competition",
+        "case_competition": "case_competition",
+        "coding contest": "coding_contest",
+        "coding_contest": "coding_contest",
+        "contest": "coding_contest",
+        "quiz": "quiz",
+    }
+    return mapping.get(raw, raw if raw in {
+        "hackathon", "ideathon", "case_competition", "coding_contest", "quiz"
+    } else None)
+
+
+def _normalize_mode(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if raw in {"online", "offline", "hybrid"}:
+        return raw
+    return None
+
+
+def _clean_tracks(tracks: Any) -> list:
+    if not isinstance(tracks, list):
+        return []
+    cleaned = []
+    for i, track in enumerate(tracks, start=1):
+        if isinstance(track, str) and track.strip():
+            cleaned.append({
+                "track_id": f"t{i}",
+                "name": track.strip(),
+                "description": "",
+            })
+        elif isinstance(track, dict):
+            name = str(track.get("name", "")).strip()
+            if not name:
+                continue
+            cleaned.append({
+                "track_id": track.get("track_id") or f"t{i}",
+                "name": name,
+                "description": str(track.get("description", "")).strip(),
+            })
+    return cleaned
+
+
+def _clean_constraints(constraints: Any) -> list:
+    if not isinstance(constraints, list):
+        return []
+
+    cleaned = []
+    supported = {"gender_diversity", "avoid_same_college", "balance_experience", "required_skill"}
+
+    for item in constraints:
+        if not isinstance(item, dict):
+            continue
+
+        ctype = str(item.get("type", "")).strip()
+        if ctype not in supported:
+            continue
+
+        if ctype == "gender_diversity":
+            min_per_team = item.get("min_per_team", 1)
+            try:
+                min_per_team = max(1, int(min_per_team))
+            except (TypeError, ValueError):
+                min_per_team = 1
+            cleaned.append({
+                "type": "gender_diversity",
+                "min_per_team": min_per_team,
+            })
+
+        elif ctype == "avoid_same_college":
+            cleaned.append({"type": "avoid_same_college"})
+
+        elif ctype == "balance_experience":
+            cleaned.append({"type": "balance_experience"})
+
+        elif ctype == "required_skill":
+            skill = str(item.get("skill", "")).strip()
+            if not skill:
+                continue
+            min_count = item.get("min_count", 1)
+            try:
+                min_count = max(1, int(min_count))
+            except (TypeError, ValueError):
+                min_count = 1
+            cleaned.append({
+                "type": "required_skill",
+                "skill": skill,
+                "min_count": min_count,
+            })
+
+    return cleaned
+
+
+def _clean_judges(judges: Any) -> list:
+    if not isinstance(judges, list):
+        return []
+
+    placeholder_names = {
+        "judge 1", "judge 2", "judge 3", "judge 4", "judge 5",
+        "judge1", "judge2", "judge3", "judge4", "judge5",
+        "judge", "actual name only", "placeholder", "tbd", "name",
+    }
+
+    cleaned = []
+    for i, judge in enumerate(judges, start=1):
+        if not isinstance(judge, dict):
+            continue
+
+        name = str(judge.get("name", "")).strip()
+        if not name or name.lower() in placeholder_names or name.lower().startswith("judge "):
+            continue
+
+        expertise = judge.get("expertise", [])
+        if isinstance(expertise, str):
+            expertise = [expertise]
+        if not isinstance(expertise, list):
+            expertise = []
+
+        cleaned.append({
+            "judge_id": judge.get("judge_id") or f"judge_{i}",
+            "name": name,
+            "company": str(judge.get("company", "")).strip(),
+            "expertise": [str(x).strip() for x in expertise if str(x).strip()],
+        })
+
+    return cleaned
+
+
+def _clean_prizes(prizes: Any) -> dict:
+    if not isinstance(prizes, dict):
+        return {}
+
+    cleaned = dict(prizes)
+
+    distribution = cleaned.get("distribution", [])
+    if not isinstance(distribution, list):
+        distribution = []
+
+    normalized_distribution = []
+    for item in distribution:
+        if not isinstance(item, dict):
+            continue
+        normalized_distribution.append({
+            "rank": item.get("rank"),
+            "title": str(item.get("title", "")).strip(),
+            "amount": str(item.get("amount", "")).strip(),
+            "description": str(item.get("description", "")).strip(),
+            "per_team": bool(item.get("per_team", True)),
+        })
+
+    cleaned["distribution"] = normalized_distribution
+
+    special_awards = cleaned.get("special_awards", [])
+    if not isinstance(special_awards, list):
+        special_awards = []
+    cleaned["special_awards"] = [
+        {
+            "name": str(item.get("name", "")).strip(),
+            "amount": str(item.get("amount", "")).strip(),
+            "description": str(item.get("description", "")).strip(),
+        }
+        for item in special_awards
+        if isinstance(item, dict) and str(item.get("name", "")).strip()
+    ]
+
+    if not cleaned.get("total_pool") and normalized_distribution:
+        total = _sum_prize_distribution(normalized_distribution)
+        if total:
+            cleaned["total_pool"] = total
+
+    if _prize_pool_missing({"prizes": cleaned}) and not normalized_distribution and not cleaned["special_awards"]:
+        return {}
+
+    cleaned.setdefault("currency", "INR")
+    return cleaned
+
+
+def _validate_and_clean_config(config: dict) -> dict:
+    if not isinstance(config, dict):
+        return {}
+
+    core = config.setdefault("core", {})
+    participants = config.setdefault("participants", {})
+    timeline = config.setdefault("timeline", {})
+
+    core["event_type"] = _normalize_event_type(core.get("event_type")) or core.get("event_type")
+    core["mode"] = _normalize_mode(core.get("mode")) or core.get("mode")
+    core["tracks"] = _clean_tracks(core.get("tracks", []))
+
+    team = participants.setdefault("team", {})
+    for key in ("min_size", "max_size", "exact_size"):
+        if key in team and team[key] is not None:
+            try:
+                team[key] = int(team[key])
+            except (TypeError, ValueError):
+                team[key] = None
+
+    if team.get("min_size") and team.get("max_size") and team["min_size"] > team["max_size"]:
+        team["min_size"], team["max_size"] = team["max_size"], team["min_size"]
+
+    capacity = participants.setdefault("capacity", {})
+    for key in ("max_teams", "max_participants"):
+        if key in capacity and capacity[key] is not None:
+            try:
+                capacity[key] = int(capacity[key])
+            except (TypeError, ValueError):
+                capacity[key] = None
+
+    team_matching = participants.setdefault("team_matching", {})
+    cleaned_constraints = _clean_constraints(team_matching.get("constraints", []))
+    team_matching["constraints"] = cleaned_constraints
+    team_matching["enabled"] = bool(cleaned_constraints)
+
+    judging_panel = config.setdefault("judging_panel", {})
+    judging_panel["judges"] = _clean_judges(judging_panel.get("judges", []))
+
+    prizes = _clean_prizes(config.get("prizes", {}))
+    if prizes:
+        config["prizes"] = prizes
+    elif "prizes" in config:
+        config["prizes"] = {}
+
+    if not isinstance(timeline.get("registration"), dict):
+        timeline["registration"] = {}
+
+    return config
 
 
 def _retry_after(err_str: str) -> str:
@@ -882,28 +1323,23 @@ async def chat(request: ChatRequest):
     user_messages = [m for m in request.messages if m.role == "user"]
     user_reply = user_messages[-1].content.strip() if user_messages else ""
 
-    # Python determines what is still missing BEFORE processing this turn
     next_q, _ = _next_question(config)
 
     models_used: List[str] = []
     updates: dict = {}
 
-    # ── Detect first turn ─────────────────────────────────────────────────────
     is_initial = len(user_messages) == 1 and not config.get("core", {}).get("name")
 
     if is_initial:
-        # Run 3 parallel section extractions
         updates, models_used = await _extract_initial_parallel(client, user_reply)
 
     elif _is_skip(user_reply):
-        # User said "no" / "not needed" — mark field as skipped
         field_key = _question_to_field_key(next_q)
         if field_key and field_key not in config["_skipped"]:
             config["_skipped"].append(field_key)
         updates = {}
 
     else:
-        # Targeted single-model extraction for the specific field being answered
         field_key = _question_to_field_key(next_q) or "unknown"
         context = (
             f"Field: {field_key}\n"
@@ -913,7 +1349,12 @@ async def chat(request: ChatRequest):
         )
         try:
             result, model_used = await asyncio.to_thread(
-                _call_model_sync, client, _next_model(), context, 1500, _followup_system()
+                _call_model_sync,
+                client,
+                _next_model(),
+                context,
+                1500,
+                _followup_system(),
             )
             models_used = [model_used]
             updates = result if isinstance(result, dict) else {}
@@ -926,42 +1367,8 @@ async def chat(request: ChatRequest):
                 )
             raise HTTPException(status_code=500, detail=err_str)
 
-        # Python safety net for simple fields the AI might miss
-        core = config.get("core", {})
-        updates_core = updates.get("core", {})
-        if not core.get("name") and not updates_core.get("name") and "name" in next_q.lower():
-            updates = _deep_merge(updates, {"core": {"name": user_reply}})
-        elif not core.get("theme") and not updates_core.get("theme") and "theme" in next_q.lower():
-            updates = _deep_merge(updates, {"core": {"theme": user_reply}})
-        elif not core.get("mode") and not updates_core.get("mode"):
-            mv = user_reply.lower().strip()
-            if mv in ("online", "offline", "hybrid"):
-                updates = _deep_merge(updates, {"core": {"mode": mv}})
-
-        # Prize safety net: if AI put prizes fields at wrong nesting level, fix it
-        if field_key == "prizes":
-            prize_updates = updates.get("prizes", {})
-            # If AI returned top-level total_pool instead of wrapping in prizes key
-            if not prize_updates.get("total_pool") and updates.get("total_pool"):
-                updates = _deep_merge(updates, {"prizes": {"total_pool": updates.pop("total_pool")}})
-            # If AI still didn't set total_pool but gave distribution, compute total from it
-            prize_updates = updates.get("prizes", {})
-            if not prize_updates.get("total_pool") and isinstance(prize_updates.get("distribution"), list):
-                total = _sum_prize_distribution(prize_updates["distribution"])
-                if total:
-                    updates = _deep_merge(updates, {"prizes": {"total_pool": total}})
-            # Last resort: if AI produced nothing useful, store raw reply so question moves forward
-            if _prize_pool_missing({"prizes": updates.get("prizes", {})}):
-                updates = _deep_merge(updates, {"prizes": {"total_pool": user_reply.strip()}})
-
-    # ── Merge updates into config ─────────────────────────────────────────────
     if updates:
         config = _deep_merge(config, updates)
-
-    # Normalize theme: must be a short phrase, not a sentence
-    theme = config.get("core", {}).get("theme", "")
-    if isinstance(theme, str) and len(theme) > 50:
-        config["core"]["theme"] = None
 
     config.setdefault("event_id", event_id)
     config.setdefault("version", "1.0")
@@ -969,10 +1376,11 @@ async def chat(request: ChatRequest):
     for key, val in _static_sections().items():
         config.setdefault(key, val)
 
+    config = _validate_and_clean_config(config)
     config = _enrich_config(config)
+
     _save_config(event_id, config)
 
-    # Re-check after merge — Python is authoritative
     message, is_complete = _next_question(config)
 
     return {
