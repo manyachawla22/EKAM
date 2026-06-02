@@ -37,7 +37,16 @@ class Settings(BaseSettings):
 
     # ----- Frontend URL for magic links -----
     FRONTEND_URL: str = "http://localhost:3000"
-    
+
+    # ----- File storage / submissions -----
+    # Local directory (relative to the backend working dir) where uploaded
+    # submission files (PDFs) are stored.
+    UPLOAD_DIR: str = "uploads"
+    # Public base URL used to build absolute links to uploaded files. Set this
+    # to your ngrok URL (e.g. https://abc123.ngrok-free.app) so remote judges
+    # can open submissions. When empty, links fall back to the request host.
+    PUBLIC_BASE_URL: str = ""
+
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
@@ -45,3 +54,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Return the application settings singleton."""
+    return settings

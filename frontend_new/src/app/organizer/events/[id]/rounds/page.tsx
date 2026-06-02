@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Layers, Calendar } from "lucide-react";
+import { Plus, Layers, Calendar, SlidersHorizontal } from "lucide-react";
 import { toast } from "sonner";
 import { listRounds, createRound } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -14,6 +14,7 @@ import Button from "@/components/ui/Button";
 import Input, { Select } from "@/components/ui/Input";
 import { RoundStatusBadge } from "@/components/ui/Badge";
 import Modal from "@/components/ui/Modal";
+import RubricEditorModal from "@/components/rubric/RubricEditorModal";
 
 export default function RoundsPage() {
   const { id } = useParams<{ id: string }>();
@@ -23,6 +24,7 @@ export default function RoundsPage() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [rubricRound, setRubricRound] = useState<Round | null>(null);
 
   const [form, setForm] = useState({
     name: "",
@@ -229,10 +231,20 @@ export default function RoundsPage() {
                   </div>
                 )}
               </div>
+              <Button variant="secondary" onClick={() => setRubricRound(round)}>
+                <SlidersHorizontal size={14} /> Rubric
+              </Button>
             </motion.div>
           ))}
         </div>
       )}
+
+      <RubricEditorModal
+        open={!!rubricRound}
+        roundId={rubricRound?.id ?? null}
+        roundName={rubricRound?.name}
+        onClose={() => setRubricRound(null)}
+      />
 
       <Modal
         open={modalOpen}

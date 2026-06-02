@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Send, ExternalLink } from "lucide-react";
@@ -10,6 +10,7 @@ import TeamDetailModal from "@/components/ui/TeamDetailModal";
 import { toast } from "sonner";
 import { listRounds, listSubmissions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import type { Submission, Round } from "@/types";
 import Badge from "@/components/ui/Badge";
 
@@ -31,32 +32,39 @@ export default function SubmissionsPage() {
   const [loading, setLoading] = useState(true);
   const [teamModal, setTeamModal] = useState<{ teamId: string; teamName: string } | null>(null);
 
+  const load = useCallback(async () => {
+    if (!id) return;
+    try {
+      const rounds: Round[] = await listRounds(id).catch(() => []);
+      // Fetch every round's submissions in parallel rather than sequentially.
+      const perRound = await Promise.all(
+        rounds.map(async (r) => {
+          const subs = await listSubmissions(r.id).catch(() => []);
+          return subs.map((s) => ({ ...s, roundName: r.name }));
+        })
+      );
+      setSubmissions(perRound.flat());
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to load submissions"
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user || !id) {
       setLoading(false);
       return;
     }
-    (async () => {
-      try {
-        const rounds: Round[] = await listRounds(id).catch(() => []);
-        const allSubs: SubmissionWithRound[] = [];
-        for (const r of rounds) {
-          const subs = await listSubmissions(r.id).catch(() => []);
-          for (const s of subs) {
-            allSubs.push({ ...s, roundName: r.name });
-          }
-        }
-        setSubmissions(allSubs);
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Failed to load submissions"
-        );
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [id, authLoading, user]);
+    load();
+  }, [id, authLoading, user, load]);
+
+  useAutoRefresh(() => {
+    if (user && id) load();
+  });
 
   return (
     <div style={{ maxWidth: "80rem", margin: "0 auto", width: "100%" }}>

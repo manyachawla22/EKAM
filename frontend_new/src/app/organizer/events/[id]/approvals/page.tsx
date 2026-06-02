@@ -21,6 +21,7 @@ import {
   reviewApproval,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import type { ApprovalRequest, ApprovalStatus, ApprovalRequestType } from "@/types";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
@@ -194,6 +195,10 @@ export default function ApprovalsPage() {
     }
     fetchAll();
   }, [authLoading, user, fetchAll]);
+
+  useAutoRefresh(() => {
+    if (user && id) fetchAll();
+  });
 
   const openReview = (req: ApprovalRequest, action: "approved" | "rejected") => {
     setReviewTarget(req);

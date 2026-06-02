@@ -34,6 +34,24 @@ async def startup_db_client():
             await conn.run_sync(Base.metadata.create_all)
     except Exception as e:
         print(f"[startup] DB unavailable, skipping table creation: {e}")
+        return
+
+    # One-time backfill: recompute every submission's panel_average/final_score
+    # from its evaluations. The write path is correct now (flush fix), but rows
+    # scored before the fix can hold a stale average that shows on dashboards.
+    try:
+        from sqlalchemy import select
+        from app.core.database import AsyncSessionLocal
+        from app.models.submission import Submission
+        from app.services.submission_service import recompute_panel_averages
+
+        async with AsyncSessionLocal() as session:
+            submissions = (await session.execute(select(Submission))).scalars().all()
+            changed = await recompute_panel_averages(session, submissions)
+            if changed:
+                print("[startup] backfilled stale submission panel averages")
+    except Exception as e:
+        print(f"[startup] panel-average backfill skipped: {e}")
 
 @app.get("/")
 def root():

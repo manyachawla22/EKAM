@@ -96,6 +96,15 @@ export interface Team {
   created_at?: string;
 }
 
+export interface RubricCriterion {
+  id: string;
+  round_id: string;
+  name: string;
+  description?: string | null;
+  max_score: number;
+  position: number;
+}
+
 export interface JudgeAssignment {
   id: string;
   judge_id: string;

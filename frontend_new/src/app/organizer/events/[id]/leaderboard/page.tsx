@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Award, Trophy, ChevronRight } from "lucide-react";
@@ -13,8 +13,12 @@ import {
   listTeams,
   getEvent,
   proposeStageTransition,
+  getWinnersProposal,
+  confirmWinners,
+  type WinnerEntry,
 } from "@/lib/api";
 import type { Round, Submission, Team, Event, EventStage } from "@/types";
+import { useAutoRefresh } from "@/lib/useAutoRefresh";
 import Button from "@/components/ui/Button";
 
 const card: React.CSSProperties = {
@@ -51,6 +55,33 @@ export default function LeaderboardPage() {
   const [targetStage, setTargetStage] = useState<EventStage>("results");
   const [proposing, setProposing] = useState(false);
 
+  const [winners, setWinners] = useState<WinnerEntry[]>([]);
+  const [winnersLoaded, setWinnersLoaded] = useState(false);
+  const [confirmingWinners, setConfirmingWinners] = useState(false);
+
+  const isResultsStage = event?.stage === "results" || event?.stage === "completed";
+
+  useEffect(() => {
+    if (!id || !isResultsStage || winnersLoaded) return;
+    getWinnersProposal(id, 3)
+      .then((res) => setWinners(res.winners))
+      .catch(() => setWinners([]))
+      .finally(() => setWinnersLoaded(true));
+  }, [id, isResultsStage, winnersLoaded]);
+
+  const handleConfirmWinners = async () => {
+    if (!id || winners.length === 0) return;
+    setConfirmingWinners(true);
+    try {
+      const res = await confirmWinners(id, winners);
+      toast.success(res.message || "Winners announced!");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to announce winners");
+    } finally {
+      setConfirmingWinners(false);
+    }
+  };
+
   const fetchBase = useCallback(async () => {
     if (!id) return;
     setLoading(true);
@@ -81,6 +112,11 @@ export default function LeaderboardPage() {
       .catch(() => setSubmissions([]))
       .finally(() => setLoadingBoard(false));
   }, [selectedRound]);
+
+  useAutoRefresh(() => {
+    fetchBase();
+    if (selectedRound) getLeaderboard(selectedRound).then(setSubmissions).catch(() => {});
+  });
 
   const teamName = (teamId: string) =>
     teams.find((t) => t.id === teamId)?.name ?? `Team ${teamId.slice(0, 6)}`;
@@ -158,7 +194,7 @@ export default function LeaderboardPage() {
             <div className="shimmer" style={{ height: "12rem", borderRadius: "0.5rem" }} />
           ) : submissions.length === 0 ? (
             <p style={{ textAlign: "center", color: "rgba(255,255,255,0.35)", fontSize: "0.875rem" }}>
-              No submissions yet for this round.
+              The leaderboard will appear after the first team is evaluated.
             </p>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
@@ -176,9 +212,9 @@ export default function LeaderboardPage() {
                   const aboveCutoff = (sub.final_score ?? 0) >= cutoffScore;
                   const isCutoffLine = idx > 0 && (submissions[idx - 1].final_score ?? 0) >= cutoffScore && !aboveCutoff;
                   return (
-                    <>
+                    <Fragment key={sub.id}>
                       {isCutoffLine && (
-                        <tr key="cutoff-line">
+                        <tr>
                           <td colSpan={5} style={{ padding: "0.25rem 0" }}>
                             <div style={{ borderTop: "1px dashed rgba(251,191,36,0.5)", position: "relative" }}>
                               <span style={{
@@ -191,7 +227,7 @@ export default function LeaderboardPage() {
                           </td>
                         </tr>
                       )}
-                      <tr key={sub.id} style={{ borderBottom: "1px solid #1a1a1a", opacity: aboveCutoff ? 1 : 0.6 }}>
+                      <tr style={{ borderBottom: "1px solid #1a1a1a", opacity: aboveCutoff ? 1 : 0.6 }}>
                         <td style={{ padding: "0.75rem", fontWeight: 700, color: idx < 3 ? "#e8503a" : "#fff" }}>
                           #{idx + 1}
                           {idx === 0 && " 🥇"}
@@ -217,7 +253,7 @@ export default function LeaderboardPage() {
                           </span>
                         </td>
                       </tr>
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -269,6 +305,59 @@ export default function LeaderboardPage() {
             <Button variant="primary" onClick={handlePropose} loading={proposing}>
               <ChevronRight size={16} /> Propose Transition
             </Button>
+          </div>
+        )}
+
+        {/* Winner selection (results / completed) */}
+        {isResultsStage && (
+          <div style={{ ...card, border: "1px solid rgba(251,191,36,0.25)", background: "rgba(251,191,36,0.05)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.75rem" }}>
+              <Trophy size={18} color="#fbbf24" />
+              <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#fff", margin: 0 }}>
+                Select Winners
+              </h2>
+            </div>
+            <p style={{ fontSize: "0.875rem", color: "rgba(255,255,255,0.5)", marginBottom: "1rem" }}>
+              Top teams by score are proposed below. Edit prizes if needed, then confirm to email winners
+              their announcement + certificate, and distribute participation certificates to everyone.
+            </p>
+
+            {winners.length === 0 ? (
+              <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.4)" }}>
+                {winnersLoaded ? "No evaluated teams to rank yet." : "Loading proposal…"}
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {winners.map((w, i) => (
+                  <div key={w.team_id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0.75rem", borderRadius: "0.5rem", background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e1e" }}>
+                    <span style={{ fontWeight: 800, color: "#fbbf24", width: "2rem" }}>
+                      {w.rank === 1 ? "🥇" : w.rank === 2 ? "🥈" : w.rank === 3 ? "🥉" : `#${w.rank}`}
+                    </span>
+                    <span style={{ flex: 1, color: "#fff", fontWeight: 600 }}>{w.team_name}</span>
+                    <span style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.5)" }}>{w.score?.toFixed(1) ?? "—"}</span>
+                    <input
+                      value={w.prize ?? ""}
+                      onChange={(e) =>
+                        setWinners((prev) => prev.map((x, idx) => (idx === i ? { ...x, prize: e.target.value } : x)))
+                      }
+                      placeholder="Prize (optional)"
+                      style={{ ...inputBase, width: "12rem" }}
+                    />
+                    <button
+                      onClick={() => setWinners((prev) => prev.filter((_, idx) => idx !== i))}
+                      style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.3)", cursor: "pointer", fontSize: "0.75rem" }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <div style={{ marginTop: "0.75rem" }}>
+                  <Button variant="primary" onClick={handleConfirmWinners} loading={confirmingWinners}>
+                    <Trophy size={16} /> Confirm & Announce Winners
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </motion.div>

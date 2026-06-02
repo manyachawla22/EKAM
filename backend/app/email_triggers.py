@@ -6,13 +6,13 @@ from groq import Groq
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.certificate import generate_certificate_html, send_email_smtp
+from app.certificate import generate_certificate_html
 from app.core.config import settings
 from app.models.email import EmailType
 from app.models.event import Event, EventStage
 from app.models.judge import Judge, JudgeAssignment
 from app.models.participant import Participant
-from app.services.email_service import draft_bulk_emails
+from app.services.email_service import draft_bulk_emails, send_direct_email
 
 
 # ---------------------------------------------------------------------
@@ -709,17 +709,21 @@ async def on_certificate_distribution(
 
             attachment_name = _safe_certificate_filename(participant_name)
 
-            await asyncio.to_thread(
-                send_email_smtp,
-                recipient_email=participant_email,
+            ok = await send_direct_email(
+                to=participant_email,
                 subject=subject,
                 body_html=body_html,
                 body_text=body_text,
                 attachments={
-                    attachment_name: certificate_html.encode("utf-8"),},
+                    attachment_name: certificate_html.encode("utf-8"),
+                },
             )
 
-            sent_count += 1
+            if ok:
+                sent_count += 1
+            else:
+                failed_count += 1
+                continue
 
         except Exception as exc:
             print(
