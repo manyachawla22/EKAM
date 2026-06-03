@@ -1120,7 +1120,7 @@ def _enrich_config(config: dict) -> dict:
             crit.setdefault("score_type", "integer")
             crit.setdefault("description", "")
         rnd.setdefault("judging", {
-            "judges_per_team": 2,
+            "judges_per_team": 3,
             "judge_assignment_method": "balanced",
             "avoid_judge_team_conflict": True,
             "scoring_method": "average",

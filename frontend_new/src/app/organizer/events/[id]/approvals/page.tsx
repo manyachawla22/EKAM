@@ -19,11 +19,15 @@ import {
   listPendingApprovals,
   listApprovalHistory,
   reviewApproval,
+  listTeams,
+  listJudges,
+  listParticipants,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
-import type { ApprovalRequest, ApprovalStatus, ApprovalRequestType } from "@/types";
+import type { ApprovalRequest, ApprovalStatus, ApprovalRequestType, Team, Judge, Participant } from "@/types";
 import Button from "@/components/ui/Button";
+import ApprovalEditor from "@/components/approvals/ApprovalEditor";
 import Modal from "@/components/ui/Modal";
 import { Textarea } from "@/components/ui/Input";
 
@@ -156,6 +160,114 @@ function PayloadPreview({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
+function prettyStepLabel(step: string): string {
+  if (!step) return "—";
+  if (step.startsWith("round:")) {
+    const phase = step.split(":")[2] || "";
+    return `Round ${phase}`;
+  }
+  return step.replace(/_/g, " ");
+}
+
+// Read-only, human-readable rendering of a resolved approval's payload, so the
+// History tab shows real names (teams, judges, participants) instead of raw JSON.
+function ApprovalSummary({
+  approval,
+  teams,
+  judges,
+  participants,
+}: {
+  approval: ApprovalRequest;
+  teams: Team[];
+  judges: Judge[];
+  participants: Participant[];
+}) {
+  const teamName = (idVal: string) =>
+    teams.find((t) => t.id === idVal)?.name || `Team ${idVal.slice(0, 8)}`;
+  const judgeName = (idVal: string) =>
+    judges.find((j) => j.id === idVal)?.name || `Judge ${idVal.slice(0, 8)}`;
+  const participantName = (idVal: string) =>
+    participants.find((p) => p.id === idVal)?.name || idVal.slice(0, 8);
+
+  const payload = (approval.payload || {}) as Record<string, unknown>;
+  const type = approval.request_type as string;
+  const line: React.CSSProperties = { fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", margin: "0.15rem 0" };
+
+  if (type === "team_formation") {
+    const teamsObj = (payload.teams as Record<string, Array<{ id: string; name?: string; institution?: string }>>) || {};
+    const keys = Object.keys(teamsObj);
+    return (
+      <div>
+        {keys.map((k) => (
+          <p key={k} style={line}>
+            <strong style={{ color: "#fff" }}>Team {Number(k) + 1}:</strong>{" "}
+            {(teamsObj[k] || [])
+              .map((m) => {
+                const nm = m.name || participantName(m.id);
+                return m.institution ? `${nm} (${m.institution})` : nm;
+              })
+              .join(", ") || "—"}
+          </p>
+        ))}
+      </div>
+    );
+  }
+
+  if (type === "judge_assignment") {
+    const assignments = (payload.assignments as Array<{ judge_id: string; team_id: string; judge_name?: string; judge_institution?: string; team_name?: string }>) || [];
+    return (
+      <div>
+        {assignments.map((a, i) => {
+          const jn = a.judge_name || judgeName(a.judge_id);
+          const jLabel = a.judge_institution ? `${jn} — ${a.judge_institution}` : jn;
+          const tn = a.team_name || teamName(a.team_id);
+          return (
+            <p key={i} style={line}>
+              {jLabel} → <strong style={{ color: "#fff" }}>{tn}</strong>
+            </p>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (type === "stage_transition" || type === "progression") {
+    const currentStep = (payload.current_step as string) || "";
+    const nextStep = (payload.next_step as string) || (payload.target_stage as string) || "";
+    const advancing = (payload.advancing_teams as Array<{ team_name?: string; team_id: string }>) || [];
+    const eliminated = (payload.eliminated_teams as Array<{ team_name?: string; team_id: string }>) || [];
+    const cutoff = payload.cutoff_score;
+    return (
+      <div>
+        <p style={line}>
+          Advance pipeline{currentStep ? ` from "${prettyStepLabel(currentStep)}"` : ""} →{" "}
+          <strong style={{ color: "#fff" }}>{prettyStepLabel(nextStep)}</strong>
+        </p>
+        {cutoff != null && <p style={line}>Cutoff score: {String(cutoff)}</p>}
+        {advancing.length > 0 && (
+          <p style={line}>Advancing: {advancing.map((t) => t.team_name || teamName(t.team_id)).join(", ")}</p>
+        )}
+        {eliminated.length > 0 && (
+          <p style={line}>Eliminated: {eliminated.map((t) => t.team_name || teamName(t.team_id)).join(", ")}</p>
+        )}
+      </div>
+    );
+  }
+
+  if (type === "email_batch") {
+    return (
+      <div>
+        <p style={line}>
+          <strong style={{ color: "#fff" }}>{(payload.subject as string) || "(no subject)"}</strong>
+        </p>
+        <p style={line}>{(payload.recipient_count as number) ?? "?"} recipient(s)</p>
+      </div>
+    );
+  }
+
+  return <PayloadPreview payload={approval.payload} />;
+}
+
 export default function ApprovalsPage() {
   const { id } = useParams<{ id: string }>();
   const { user, loading: authLoading } = useAuth();
@@ -169,17 +281,29 @@ export default function ApprovalsPage() {
     null
   );
   const [reviewNotes, setReviewNotes] = useState("");
+  const [reviewCutoff, setReviewCutoff] = useState(50);
   const [submittingReview, setSubmittingReview] = useState(false);
+
+  // Lookup data so proposals can show real names (and editors offer choices).
+  const [teamsList, setTeamsList] = useState<Team[]>([]);
+  const [judgesList, setJudgesList] = useState<Judge[]>([]);
+  const [participantsList, setParticipantsList] = useState<Participant[]>([]);
 
   const fetchAll = useCallback(async () => {
     if (!id) return;
     try {
-      const [p, h] = await Promise.all([
+      const [p, h, t, j, pa] = await Promise.all([
         listPendingApprovals(id).catch(() => []),
         listApprovalHistory(id).catch(() => []),
+        listTeams(id).catch(() => [] as Team[]),
+        listJudges(id).catch(() => [] as Judge[]),
+        listParticipants(id).catch(() => [] as Participant[]),
       ]);
       setPending(p);
       setHistory(h);
+      setTeamsList(t);
+      setJudgesList(j);
+      setParticipantsList(pa);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load approvals");
     } finally {
@@ -206,6 +330,11 @@ export default function ApprovalsPage() {
     setReviewNotes("");
   };
 
+  const isAdvancementReview = (req: ApprovalRequest | null): boolean => {
+    const step = (req?.payload as { current_step?: string } | undefined)?.current_step;
+    return typeof step === "string" && step.endsWith(":advancement");
+  };
+
   const handleSubmitReview = async () => {
     if (!reviewTarget || !reviewAction || !id) return;
     setSubmittingReview(true);
@@ -213,6 +342,10 @@ export default function ApprovalsPage() {
       await reviewApproval(id, reviewTarget.id, {
         action: reviewAction,
         review_notes: reviewNotes || undefined,
+        cutoff_score:
+          reviewAction === "approved" && isAdvancementReview(reviewTarget)
+            ? reviewCutoff
+            : undefined,
       });
       toast.success(
         reviewAction === "approved" ? "Approved" : "Rejected"
@@ -471,7 +604,18 @@ export default function ApprovalsPage() {
                 </div>
 
                 <div style={{ marginTop: "0.85rem" }}>
-                  <PayloadPreview payload={req.payload} />
+                  {isActionable ? (
+                    <ApprovalEditor
+                      eventId={id}
+                      approval={req}
+                      teams={teamsList}
+                      judges={judgesList}
+                      participants={participantsList}
+                      onSaved={fetchAll}
+                    />
+                  ) : (
+                    <PayloadPreview payload={req.payload} />
+                  )}
                 </div>
               </motion.div>
             );
@@ -518,6 +662,24 @@ export default function ApprovalsPage() {
               ? "Approving will execute the proposed action immediately (e.g. commit team formations, send invitations)."
               : "Rejecting cancels the proposal. The requester will need to re-trigger if they want to retry."}
           </div>
+          {reviewAction === "approved" && isAdvancementReview(reviewTarget) && (
+            <div>
+              <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>
+                Qualifying cutoff score
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={reviewCutoff}
+                onChange={(e) => setReviewCutoff(Number(e.target.value))}
+                style={{ width: "100%", borderRadius: "0.5rem", border: "1px solid #222", background: "#0d0d0d", padding: "0.5rem 0.75rem", fontSize: "0.875rem", color: "#fff", outline: "none" }}
+              />
+              <p style={{ marginTop: "0.3rem", fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
+                Teams scoring at or above this advance; the rest receive a failure email and are blocked from later rounds.
+              </p>
+            </div>
+          )}
           <Textarea
             label="Notes (optional)"
             placeholder="Reason / comments for the requester…"

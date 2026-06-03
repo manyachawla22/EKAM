@@ -59,7 +59,9 @@ export default function LeaderboardPage() {
   const [winnersLoaded, setWinnersLoaded] = useState(false);
   const [confirmingWinners, setConfirmingWinners] = useState(false);
 
-  const isResultsStage = event?.stage === "results" || event?.stage === "completed";
+  // Only at the results stage (winner-selection). Once winners are announced the
+  // event advances to "completed", so the panel disappears.
+  const isResultsStage = event?.stage === "results";
 
   useEffect(() => {
     if (!id || !isResultsStage || winnersLoaded) return;

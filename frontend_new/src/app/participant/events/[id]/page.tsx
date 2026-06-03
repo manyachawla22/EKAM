@@ -31,6 +31,8 @@ import Input from "@/components/ui/Input";
 import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Navbar from "@/components/layout/Navbar";
 import TeamDetailModal from "@/components/ui/TeamDetailModal";
+import DynamicPipeline from "@/components/pipeline/DynamicPipeline";
+import { getPipelineState } from "@/lib/api";
 
 const card: React.CSSProperties = {
   borderRadius: "0.75rem",
@@ -136,6 +138,8 @@ export default function ParticipantEventDetailPage() {
   const [loading, setLoading] = useState(true);
   const [teamModalOpen, setTeamModalOpen] = useState(false);
   const [dismissedNotifs, setDismissedNotifs] = useState<Set<string>>(new Set());
+  const [eliminatedTeamIds, setEliminatedTeamIds] = useState<string[]>([]);
+  const [closedRoundIds, setClosedRoundIds] = useState<string[]>([]);
 
   // Registration form
   const [registering, setRegistering] = useState(false);
@@ -157,6 +161,7 @@ export default function ParticipantEventDetailPage() {
   const myTeam = registered && dashboard?.team
     ? teams.find((t) => t.id === dashboard.team!.id) ?? null
     : null;
+  const isEliminated = !!(dashboard?.team && eliminatedTeamIds.includes(dashboard.team.id));
 
   const fetchAll = useCallback(async (initial = false) => {
     // Clear the skeleton if we can't load yet (e.g. profile not ready), so a
@@ -166,19 +171,22 @@ export default function ParticipantEventDetailPage() {
     try {
       // Load everything independent in parallel — much faster than the previous
       // chain of sequential round-trips (matters most on a cold backend).
-      const [ev, roundsData, teamsData, dash, parts, themesData] = await Promise.all([
+      const [ev, roundsData, teamsData, dash, parts, themesData, pipeline] = await Promise.all([
         getEvent(id),
         listRounds(id).catch(() => [] as Round[]),
         listTeams(id).catch(() => [] as Team[]),
         getParticipantDashboard(id).catch(() => null),
         listParticipants(id).catch(() => []),
         listThemes(id).catch(() => [] as Theme[]),
+        getPipelineState(id).catch(() => null),
       ]);
       setEvent(ev);
       setRounds(roundsData);
       setTeams(teamsData);
       setDashboard(dash);
       setThemes(themesData);
+      setEliminatedTeamIds(pipeline?.eliminated_team_ids ?? []);
+      setClosedRoundIds(pipeline?.closed_submission_round_ids ?? []);
 
       // Find participant id for this user
       setRegisteredCount(parts.length);
@@ -406,7 +414,7 @@ export default function ParticipantEventDetailPage() {
             <h2 style={{ fontSize: "0.875rem", fontWeight: 700, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.05em", margin: "0 0 1.25rem" }}>
               Event Progress
             </h2>
-            <StagePipeline currentStage={event.stage} />
+            <DynamicPipeline eventId={id} />
           </div>
 
           {/* Your team */}
@@ -536,6 +544,7 @@ export default function ParticipantEventDetailPage() {
               <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                 {rounds.map((r) => {
                   const sub = dashboard?.submissions?.find((s) => s.round_id === r.id);
+                  const submissionClosed = closedRoundIds.includes(r.id);
                   return (
                     <div key={r.id} style={{
                       padding: "0.875rem 1rem", borderRadius: "0.5rem",
@@ -562,6 +571,8 @@ export default function ParticipantEventDetailPage() {
                           ✓ Submitted {sub.submitted_at ? new Date(sub.submitted_at).toLocaleDateString() : ""}
                           {sub.final_score != null && <> · Score: <span style={{ color: "#4ade80", fontWeight: 700 }}>{sub.final_score}/100</span></>}
                         </div>
+                      ) : submissionClosed ? (
+                        <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "rgba(248,113,113,0.8)" }}>Submissions closed</div>
                       ) : (
                         <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.35)" }}>No submission yet</div>
                       )}
@@ -572,8 +583,84 @@ export default function ParticipantEventDetailPage() {
             </div>
           )}
 
+          {/* Progression invitation for qualifying teams */}
+          {registered && !isEliminated && progressStatus === "advancing" && (
+            <div style={{ ...card, border: "1px solid rgba(74,222,128,0.3)", background: "rgba(74,222,128,0.08)" }}>
+              <p style={{ fontSize: "0.95rem", fontWeight: 700, color: "#4ade80", margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Trophy size={18} color="#4ade80" /> You&apos;re through to the next round!
+              </p>
+              <p style={{ marginTop: "0.4rem", fontSize: "0.85rem", color: "rgba(255,255,255,0.6)" }}>
+                Congratulations — your team qualified. Watch this page and your email for the next round&apos;s
+                submission window and deadlines.
+              </p>
+            </div>
+          )}
+
+          {/* Evaluators / judging panel */}
+          {registered && (dashboard?.evaluators?.length ?? 0) > 0 && (
+            <div style={card}>
+              <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#fff", margin: "0 0 0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Award size={18} color="#e8503a" /> Your Evaluators
+              </h2>
+              <p style={{ margin: "0 0 0.75rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.4)" }}>
+                Your submission is reviewed by a panel of judges.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {dashboard!.evaluators!.map((j) => (
+                  <div key={j.id} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.625rem 0.875rem", borderRadius: "0.5rem", background: "rgba(255,255,255,0.03)", border: "1px solid #1e1e1e" }}>
+                    <div style={{ width: "2rem", height: "2rem", borderRadius: "9999px", background: "rgba(232,80,58,0.12)", color: "#e8503a", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: "0.8rem", flexShrink: 0 }}>
+                      {j.name?.charAt(0)?.toUpperCase() ?? "J"}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "#fff", margin: 0 }}>{j.name}</p>
+                      {(j.institution || (j.expertise && j.expertise.length > 0)) && (
+                        <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>
+                          {[j.institution, (j.expertise ?? []).join(", ")].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Key dates & deadlines */}
+          {registered && rounds.some((r) => r.start_date || r.end_date) && (
+            <div style={card}>
+              <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#fff", margin: "0 0 0.75rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Clock size={18} color="#e8503a" /> Key Dates & Deadlines
+              </h2>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {rounds.filter((r) => r.start_date || r.end_date).map((r) => (
+                  <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", fontSize: "0.8rem" }}>
+                    <span style={{ color: "#fff", fontWeight: 600 }}>{r.name}</span>
+                    <span style={{ color: "rgba(255,255,255,0.5)" }}>
+                      {r.start_date && new Date(r.start_date).toLocaleDateString("en-US", { day: "numeric", month: "short" })}
+                      {r.start_date && r.end_date && " → "}
+                      {r.end_date && <span style={{ color: "#fbbf24" }}>{new Date(r.end_date).toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Eliminated banner */}
+          {registered && isEliminated && (
+            <div style={{ ...card, border: "1px solid rgba(248,113,113,0.25)", background: "rgba(248,113,113,0.08)" }}>
+              <p style={{ fontSize: "0.95rem", fontWeight: 700, color: "#f87171", margin: 0 }}>
+                Your team did not advance
+              </p>
+              <p style={{ marginTop: "0.4rem", fontSize: "0.85rem", color: "rgba(255,255,255,0.55)" }}>
+                Thank you for participating! Submissions for further rounds are closed for your team.
+                Your participation certificate will be emailed to you.
+              </p>
+            </div>
+          )}
+
           {/* Submit project */}
-          {registered && event.stage === "submission" && (
+          {registered && !isEliminated && event.stage === "submission" && (
             <div style={card}>
               <h2 style={{ fontSize: "1rem", fontWeight: 700, color: "#fff", margin: "0 0 0.25rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
                 <Send size={18} color="#e8503a" /> Submit Project
@@ -591,8 +678,13 @@ export default function ParticipantEventDetailPage() {
                     <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>Round *</label>
                     <select value={selectedRound} onChange={(e) => setSelectedRound(e.target.value)} required style={inputBase}>
                       <option value="">Select a round...</option>
-                      {rounds.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                      {rounds.filter((r) => !closedRoundIds.includes(r.id)).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                     </select>
+                    {rounds.every((r) => closedRoundIds.includes(r.id)) && rounds.length > 0 && (
+                      <p style={{ marginTop: "0.375rem", fontSize: "0.75rem", color: "rgba(250,204,21,0.7)" }}>
+                        Submissions are closed for all rounds — the event has moved on.
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>Project Links</label>

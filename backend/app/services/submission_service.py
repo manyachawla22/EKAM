@@ -2,8 +2,11 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 
 from app.models.submission import Submission, Evaluation
+from app.models.event import Round
+from app.models.pipeline import EventPipeline
 
 
 async def recompute_panel_averages(db: AsyncSession, submissions) -> bool:
@@ -54,7 +57,9 @@ async def get_submission_service(
     submission_id,
 ):
     result = await db.execute(
-        select(Submission).where(Submission.id == submission_id)
+        select(Submission)
+        .options(selectinload(Submission.team))
+        .where(Submission.id == submission_id)
     )
     submission = result.scalars().first()
 
@@ -73,6 +78,34 @@ async def create_submission_service(
 ):
     data = submission_data.model_dump()
 
+    # Block teams that were eliminated in a previous round from submitting.
+    round_obj = (
+        await db.execute(select(Round).where(Round.id == data["round_id"]))
+    ).scalars().first()
+    if round_obj and round_obj.event_id:
+        pipeline = (
+            await db.execute(
+                select(EventPipeline).where(EventPipeline.event_id == round_obj.event_id)
+            )
+        ).scalars().first()
+        if pipeline:
+            eliminated = (pipeline.data or {}).get("eliminated_team_ids", [])
+            if str(data["team_id"]) in eliminated:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your team did not advance and can no longer submit for this event.",
+                )
+
+        # The submission window for this round closes once the pipeline moves
+        # past its submission step.
+        from app.services.pipeline_service import is_round_submission_closed
+
+        if await is_round_submission_closed(db, round_obj.event_id, round_obj.id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Submissions for this round are closed.",
+            )
+
     # A team has a single submission per round. Re-submitting updates the
     # existing row instead of creating a duplicate — duplicates were showing up
     # twice for organizers and splitting judges across different rows (so their
@@ -89,7 +122,8 @@ async def create_submission_service(
     if existing:
         existing.attachments = data.get("attachments") or []
         await db.commit()
-        await db.refresh(existing)
+        await db.refresh(existing, attribute_names=["team"])
+        await _autopropose_after_submission(db, round_obj)
         return existing
 
     submission = Submission(**data)
@@ -97,9 +131,23 @@ async def create_submission_service(
     db.add(submission)
 
     await db.commit()
-    await db.refresh(submission)
+    await db.refresh(submission, attribute_names=["team"])
+
+    await _autopropose_after_submission(db, round_obj)
 
     return submission
+
+
+async def _autopropose_after_submission(db: AsyncSession, round_obj) -> None:
+    """When all active teams have submitted for the round, the pipeline
+    auto-proposes the next transition. Best-effort."""
+    if not round_obj or not round_obj.event_id:
+        return
+    try:
+        from app.services.pipeline_service import autopropose
+        await autopropose(db, str(round_obj.event_id))
+    except Exception as exc:
+        print(f"[submission_service] autopropose failed: {exc}")
 
 
 async def list_submissions_service(
@@ -107,9 +155,9 @@ async def list_submissions_service(
     round_id
 ):
     result = await db.execute(
-        select(Submission).where(
-            Submission.round_id == round_id
-        )
+        select(Submission)
+        .options(selectinload(Submission.team))
+        .where(Submission.round_id == round_id)
     )
 
     submissions = result.scalars().all()

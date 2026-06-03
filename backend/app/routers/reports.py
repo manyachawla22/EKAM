@@ -12,7 +12,7 @@ from app.core.auth_context import AuthContext
 from app.core.database import get_db
 from app.middleware.auth import require_actor_type, require_event_access
 from app.schemas.report import Report as ReportSchema, ReportCreate
-from app.services.anomaly_service import analyze_evaluation
+from app.services.ml_anomaly_report_service import analyze_evaluation
 from app.services.participant_performance_report_service import (
     generate_participant_performance_report_service,
 )
@@ -20,6 +20,7 @@ from app.services.plagiarism_service import detect_plagiarism_service
 from app.services.report_service import (
     create_report_service,
     list_reports_service,
+    generate_event_summary_report_service,
 )
 
 router = APIRouter(
@@ -45,6 +46,28 @@ async def generate_report(
         )
 
     return await create_report_service(db, report_in)
+
+
+@router.post(
+    "/{event_id}/generate",
+    response_model=ReportSchema,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def generate_event_summary_report(
+    event_id: UUID,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Build (and email) the rich event-summary report with standings + charts."""
+    return await generate_event_summary_report_service(
+        db=db,
+        event_id=event_id,
+        requested_by=auth.actor_id,
+    )
 
 
 @router.post(

@@ -116,7 +116,8 @@ class OTPCode(Base):
     )
 
     otp_code: Mapped[str] = mapped_column(
-        String(6),
+        # Stores a bcrypt hash of the OTP (~60 chars), not the 6-digit plaintext.
+        String(255),
         nullable=False
     )
 

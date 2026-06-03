@@ -3,9 +3,10 @@ EKAM Teams Router
 """
 
 from uuid import UUID
-from typing import List
+from typing import List, Any, Dict
 
 from fastapi import APIRouter, Depends, status, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -36,6 +37,21 @@ router = APIRouter(
 )
 
 
+class AutoFormRequest(BaseModel):
+    """Team-formation rules the organizer configures on the frontend.
+
+    `constraints` items are passed straight to the CP-SAT optimizer. Supported
+    shapes:
+      {"type": "avoid_same_college"}
+      {"type": "gender_diversity", "min_per_team": int}
+      {"type": "balance_experience"}
+      {"type": "required_skill", "skill": str, "min_count": int}
+    """
+
+    team_size: int = 3
+    constraints: List[Dict[str, Any]] = []
+
+
 @router.post(
     "/{event_id}/auto-form",
     dependencies=[
@@ -45,7 +61,7 @@ router = APIRouter(
 )
 async def auto_form_teams(
     event_id: str,
-    team_size: int = 3,
+    body: AutoFormRequest = AutoFormRequest(),
     auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)
 ):
@@ -58,8 +74,8 @@ async def auto_form_teams(
             db=db,
             event_id=event_id,
             requested_by=auth.actor_id,
-            team_size=team_size,
-            constraints=[] # Add custom constraint payloads here later
+            team_size=body.team_size,
+            constraints=body.constraints,
         )
         return {
             "message": "CP-SAT team formation proposed.",
@@ -272,6 +288,13 @@ async def submit_team_preference(
 
     # Run majority check after each submission
     await _resolve_team_preference(db, team_id, event_id)
+
+    # Pipeline: once all teams have resolved name+theme, propose the next step.
+    try:
+        from app.services.pipeline_service import autopropose
+        await autopropose(db, str(event_id))
+    except Exception as exc:
+        print(f"[teams] autopropose failed: {exc}")
 
     return pref
 

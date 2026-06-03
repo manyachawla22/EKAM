@@ -231,7 +231,7 @@ async def get_judge_assignments(
 )
 async def auto_assign_judges(
     event_id: str,
-    judges_per_team: int = 2,
+    judges_per_team: int = 3,
     max_teams_per_judge: int = 5,
     auth: AuthContext = Depends(require_actor_type(["organizer"])),
     db: AsyncSession = Depends(get_db)

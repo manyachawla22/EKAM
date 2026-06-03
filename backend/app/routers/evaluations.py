@@ -28,6 +28,7 @@ from app.services.evaluation_service import (
     submit_evaluation_service,
     get_submission_evaluations_service
 )
+from app.services.assessment_guide_service import generate_assessment_guide
 
 router = APIRouter(
     prefix="/evaluations",
@@ -111,6 +112,21 @@ async def submit_evaluation(
             status_code=500,
             detail=f"submit_evaluation failed: {type(e).__name__}: {e}",
         )
+
+
+@router.get(
+    "/guide/{submission_id}",
+    dependencies=[Depends(require_actor_type(["organizer", "judge"]))],
+)
+async def get_assessment_guide(
+    submission_id: UUID,
+    auth: AuthContext = Depends(require_actor_type(["organizer", "judge"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """A structured judging guide tailored to the submission's challenge and the
+    round's rubric. Generated on demand (AI-assisted, with a rubric-based
+    fallback)."""
+    return await generate_assessment_guide(db, submission_id)
 
 
 @router.get(

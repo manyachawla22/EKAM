@@ -30,11 +30,12 @@ export default function CreateEventPage() {
   });
 
   // Themes participants can later pick from (created after the event itself).
-  const [themes, setThemes] = useState<{ name: string; description: string }[]>([]);
+  // `skills` is a comma-separated string; split into required_skills on submit.
+  const [themes, setThemes] = useState<{ name: string; description: string; skills: string }[]>([]);
 
   const addTheme = () =>
-    setThemes((prev) => [...prev, { name: "", description: "" }]);
-  const updateTheme = (i: number, field: "name" | "description", value: string) =>
+    setThemes((prev) => [...prev, { name: "", description: "", skills: "" }]);
+  const updateTheme = (i: number, field: "name" | "description" | "skills", value: string) =>
     setThemes((prev) => prev.map((t, idx) => (idx === i ? { ...t, [field]: value } : t)));
   const removeTheme = (i: number) =>
     setThemes((prev) => prev.filter((_, idx) => idx !== i));
@@ -84,6 +85,13 @@ export default function CreateEventPage() {
             createTheme(event.id, {
               name: t.name.trim(),
               description: t.description.trim() || undefined,
+              required_skills: (() => {
+                const skills = t.skills
+                  .split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                return skills.length ? skills : undefined;
+              })(),
             })
           )
         );
@@ -306,6 +314,12 @@ export default function CreateEventPage() {
                     value={t.description}
                     onChange={(e) => updateTheme(i, "description", e.target.value)}
                     placeholder="Short description (optional)"
+                    fullWidth
+                  />
+                  <Input
+                    value={t.skills}
+                    onChange={(e) => updateTheme(i, "skills", e.target.value)}
+                    placeholder="Required skills — comma separated (e.g. React, ML)"
                     fullWidth
                   />
                 </div>

@@ -69,15 +69,17 @@ Date: {date}
 
 Requirements:
 - Modern professional design
-- Blue and gold accents
+- Elegant gold accents on a light background
 - Printable
 - Inline CSS
 - Return only HTML
+- The recipient's name "{participant_name}" MUST appear prominently as the
+  largest centered text on the certificate.
 """
 
             response = client.chat.completions.create(
                 model=getattr(settings, "GROQ_CERT_MODEL", None)
-                or "mixtral-8x7b-32768",
+                or "llama-3.3-70b-versatile",
                 messages=[
                     {
                         "role": "user",

@@ -173,8 +173,10 @@ problem understanding, MVP completion, teamwork, design, scalability, viability.
 async def generate_criteria_with_ai(db: AsyncSession, round_id) -> list[RubricCriterion]:
     """(Re)generate a round's rubric from the event context using Groq.
 
-    Falls back to the default rubric if Groq is unavailable or returns junk.
-    Replaces any existing criteria for the round.
+    Replaces existing criteria ONLY when the AI returns a usable rubric. If Groq
+    is unavailable or returns junk, the round's current rubric is left untouched
+    (or seeded with defaults if it had none) — so a failed regenerate never
+    destroys a hand-made rubric.
     """
     rnd = await _get_round(db, round_id)
     event = (
@@ -201,18 +203,10 @@ async def generate_criteria_with_ai(db: AsyncSession, round_id) -> list[RubricCr
             print(f"[rubric_service] AI rubric generation failed: {exc}")
             parsed = None
 
-    # Replace existing criteria for this round.
-    existing = (
-        await db.execute(
-            select(RubricCriterion).where(RubricCriterion.round_id == round_id)
-        )
-    ).scalars().all()
-    for c in existing:
-        await db.delete(c)
-    await db.flush()
-
+    # Build the new criteria from the AI output FIRST — only if we get a usable
+    # rubric do we touch the existing one.
+    new_criteria = []
     if parsed:
-        new_criteria = []
         for index, item in enumerate(parsed):
             try:
                 name = str(item["name"]).strip()
@@ -229,15 +223,27 @@ async def generate_criteria_with_ai(db: AsyncSession, round_id) -> list[RubricCr
                 )
             except Exception:
                 continue
-        if new_criteria:
-            db.add_all(new_criteria)
-            await db.commit()
-            for c in new_criteria:
-                await db.refresh(c)
-            return new_criteria
 
-    # Fallback: defaults.
-    return await _seed_default_criteria(db, round_id)
+    if new_criteria:
+        # Successful AI rubric — now it's safe to replace the old one.
+        existing = (
+            await db.execute(
+                select(RubricCriterion).where(RubricCriterion.round_id == round_id)
+            )
+        ).scalars().all()
+        for c in existing:
+            await db.delete(c)
+        await db.flush()
+
+        db.add_all(new_criteria)
+        await db.commit()
+        for c in new_criteria:
+            await db.refresh(c)
+        return new_criteria
+
+    # AI failed or returned junk — DON'T destroy the existing rubric. Return what's
+    # already there; only seed defaults if the round has no rubric at all.
+    return await list_criteria(db, round_id, seed_if_empty=True)
 
 
 async def total_max_for_round(db: AsyncSession, round_id) -> float:

@@ -17,11 +17,23 @@ class SubmissionCreate(SubmissionBase):
     round_id: UUID
 
 
+class TeamMini(BaseModel):
+    """Just enough of the team to render its name instead of a raw id."""
+    id: UUID
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
 class SubmissionResponse(SubmissionBase):
     id: UUID
 
     team_id: UUID
     round_id: UUID
+
+    # Resolved team so the UI shows the team name, not the raw id.
+    team: Optional[TeamMini] = None
 
     status: SubmissionStatus
 

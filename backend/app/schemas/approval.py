@@ -32,3 +32,7 @@ class ApprovalRequestResponse(ApprovalRequestBase):
 class ApprovalAction(BaseModel):
     action: ApprovalStatus = Field(..., description="approve, reject, or revise")
     review_notes: Optional[str] = None
+    # For pipeline advancement approvals: the qualifying score the organizer
+    # picks from the leaderboard. Teams scoring >= this advance; the rest are
+    # eliminated. Ignored for other request types.
+    cutoff_score: Optional[float] = None

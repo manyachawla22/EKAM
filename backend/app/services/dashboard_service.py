@@ -142,6 +142,7 @@ async def participant_dashboard_service(
 
     team_data = None
     submissions_data = []
+    evaluators = []
     progression_status = "pending"
 
     if team_member:
@@ -149,6 +150,39 @@ async def participant_dashboard_service(
         team = res_team.scalars().first()
 
         if team:
+            # Evaluators: judges assigned to this team (so participants can see
+            # who is reviewing their work).
+            res_eval_judges = await db.execute(
+                select(Judge)
+                .join(JudgeAssignment, JudgeAssignment.judge_id == Judge.id)
+                .where(JudgeAssignment.team_id == team.id)
+            )
+            seen_judge_ids = set()
+            for j in res_eval_judges.scalars().all():
+                if j.id in seen_judge_ids:
+                    continue
+                seen_judge_ids.add(j.id)
+                evaluators.append({
+                    "id": str(j.id),
+                    "name": j.name,
+                    "institution": j.institution,
+                    "expertise": j.expertise or [],
+                })
+
+            # Progression status from the pipeline's eliminated set.
+            try:
+                from app.services.pipeline_service import get_state
+
+                state = await get_state(db, event_id)
+                eliminated = state.get("eliminated_team_ids") or []
+                rounds_done = bool(state.get("closed_submission_round_ids"))
+                if str(team.id) in eliminated:
+                    progression_status = "eliminated"
+                elif rounds_done:
+                    progression_status = "advancing"
+            except Exception:
+                pass
+
             res_members = await db.execute(
                 select(TeamMember).where(TeamMember.team_id == team.id)
             )
@@ -209,6 +243,7 @@ async def participant_dashboard_service(
         "team": team_data,
         "submissions": submissions_data,
         "progression_status": progression_status,
+        "evaluators": evaluators,
         "notifications": notifications,
     }
 

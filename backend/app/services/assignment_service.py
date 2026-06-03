@@ -20,11 +20,85 @@ from app.models.approval import RequestType
 from app.services.cpsat_team_service import generate_teams
 from app.services.cpsat_judge_service import generate_assignments
 from app.services.approval_service import create_approval_request
+from app.services.llm_service import complete_json
 
 
 # =========================================================
 # TEAM FORMATION
 # =========================================================
+
+def _fallback_rationale(members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Deterministic per-team rationale used when the LLM is unavailable."""
+    skills, institutions = [], []
+    for m in members:
+        skills.extend(m.get("skills") or [])
+        if m.get("institution") and m["institution"] != "Unknown":
+            institutions.append(m["institution"])
+    unique_skills = list(dict.fromkeys(skills))
+    inst_note = (
+        "a single institution" if len(set(institutions)) <= 1 and institutions
+        else f"{len(set(institutions))} institutions"
+    )
+    return {
+        "rationale": (
+            f"This team pairs members covering {len(unique_skills)} distinct skill(s) "
+            f"across {inst_note}, giving balanced coverage for cross-functional work."
+        ),
+        "strengths": unique_skills[:3] or ["Cross-domain collaboration", "Adaptability"],
+        "watch_out_for": "Aligning on scope and ownership early to avoid overlap.",
+    }
+
+
+async def _build_team_rationales(
+    teams_dict: Dict[Any, List[Dict[str, Any]]],
+) -> Dict[str, Dict[str, Any]]:
+    """Produce a review note per proposed team.
+
+    One LLM call covers all teams; on any failure each team gets a deterministic
+    fallback so the organizer always has something to review.
+    """
+    fallback = {str(k): _fallback_rationale(v) for k, v in teams_dict.items()}
+    if not teams_dict:
+        return fallback
+
+    compact = {
+        str(k): [
+            {
+                "name": m.get("name", "Participant"),
+                "skills": m.get("skills") or [],
+                "institution": m.get("institution", "Unknown"),
+            }
+            for m in v
+        ]
+        for k, v in teams_dict.items()
+    }
+    system = (
+        "You are an event organizer reviewing proposed hackathon team "
+        "compositions. For EACH team key, explain why the grouping works. "
+        'Return ONLY JSON of the shape {"<key>": {"rationale": "2-3 sentences", '
+        '"strengths": ["..."], "watch_out_for": "one risk"}} using the exact '
+        "team keys provided."
+    )
+    import json as _json
+
+    result = await complete_json(system, _json.dumps(compact), max_tokens=1500)
+    if not isinstance(result, dict):
+        return fallback
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for key in compact:
+        item = result.get(key)
+        if isinstance(item, dict) and item.get("rationale"):
+            merged[key] = {
+                "rationale": str(item.get("rationale", "")),
+                "strengths": item.get("strengths") or fallback[key]["strengths"],
+                "watch_out_for": str(
+                    item.get("watch_out_for") or fallback[key]["watch_out_for"]
+                ),
+            }
+        else:
+            merged[key] = fallback[key]
+    return merged
 
 async def propose_team_formation(
     db: AsyncSession,
@@ -69,10 +143,15 @@ async def propose_team_formation(
         team_size=team_size,
     )
 
+    # Per-team review notes (the "rationale" the organizer reviews before
+    # approving). Stored alongside the teams so the frontend can show it.
+    rationales = await _build_team_rationales(teams_dict)
+
     payload = {
         "event_id": event_id,          # needed by execute_team_formation
         "requested_by": requested_by,  # preserved for email triggers
         "teams": teams_dict,
+        "rationales": rationales,
         "leftover_participants": leftover,
         "team_size": team_size,
     }
@@ -159,6 +238,13 @@ async def execute_team_formation(
     except Exception as e:
         print(f"[assignment_service] Auto email draft failed (non-fatal): {e}")
 
+    # Pipeline: teams now exist → auto-propose the next transition.
+    try:
+        from app.services.pipeline_service import autopropose
+        await autopropose(db, str(event_id))
+    except Exception as e:
+        print(f"[assignment_service] autopropose failed (non-fatal): {e}")
+
     return created_teams
 
 
@@ -171,14 +257,18 @@ async def propose_judge_assignment(
     event_id: str,
     requested_by: str,
     round_id: str | None = None,
-    judges_per_team: int = 2,
+    judges_per_team: int = 3,
     max_teams_per_judge: int = 5,
 ):
     """
     1. Fetch judges and teams from DB (scoped to event).
     2. Run pure CP-SAT optimizer.
     3. Create an ApprovalRequest.
+
+    Every team is reviewed by a panel of at least 3 judges (policy minimum), so
+    `judges_per_team` is floored at 3 regardless of what the caller passes.
     """
+    judges_per_team = max(3, judges_per_team)
     # Auto-detect first round for the event when caller doesn't specify one
     if not round_id:
         rounds_result = await db.execute(
@@ -257,6 +347,17 @@ async def propose_judge_assignment(
         max_teams_per_judge=max_teams_per_judge,
     )
 
+    # Enrich each assignment with human-readable fields so the stored payload
+    # (and every UI that renders it) shows judge name + institution and the team
+    # name instead of raw ids. execute_judge_assignment still reads the ids.
+    judge_by_id = {j["id"]: j for j in judge_dicts}
+    team_name_by_id = {str(t.id): t.name for t in teams_db}
+    for a in assignments:
+        j = judge_by_id.get(a.get("judge_id"), {})
+        a["judge_name"] = j.get("name")
+        a["judge_institution"] = j.get("institution")
+        a["team_name"] = team_name_by_id.get(a.get("team_id"))
+
     payload = {
         "event_id": event_id,
         "round_id": round_id,          # required by JudgeAssignment model
@@ -329,6 +430,14 @@ async def execute_judge_assignment(
                 )
     except Exception as e:
         print(f"[assignment_service] Auto judge email draft failed (non-fatal): {e}")
+
+    # Pipeline: judges assigned → auto-propose the next transition.
+    try:
+        from app.services.pipeline_service import autopropose
+        if payload.get("event_id"):
+            await autopropose(db, str(payload.get("event_id")))
+    except Exception as e:
+        print(f"[assignment_service] autopropose failed (non-fatal): {e}")
 
     return created
 
