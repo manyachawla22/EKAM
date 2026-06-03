@@ -403,8 +403,6 @@ The frontend includes:
 
 ## 🔌 API Overview
 
-This README does not dump every single endpoint, but the backend is organized cleanly by domain.
-
 ### AI
 ```text
 POST /ai/chat
