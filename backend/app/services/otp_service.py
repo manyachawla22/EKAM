@@ -8,6 +8,7 @@ Rate limited: max 5 attempts per OTP, 10-minute expiry.
 import secrets
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -17,6 +18,24 @@ from app.models.auth import OTPCode, OwnerType
 
 MAX_ATTEMPTS = 5
 OTP_EXPIRY_MINUTES = 10
+
+
+def _hash_otp(otp_code: str) -> str:
+    """Hash an OTP with bcrypt so the plaintext is never persisted."""
+    return bcrypt.hashpw(otp_code.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _otp_matches(otp_code: str, stored: str) -> bool:
+    """Constant-time check of a submitted OTP against the stored bcrypt hash.
+
+    Falls back to a plaintext comparison so OTPs issued before hashing was
+    introduced (and any non-bcrypt value) still verify during the rollover.
+    """
+    try:
+        return bcrypt.checkpw(otp_code.encode("utf-8"), stored.encode("utf-8"))
+    except ValueError:
+        # `stored` isn't a valid bcrypt hash (legacy plaintext OTP).
+        return secrets.compare_digest(otp_code, stored)
 
 
 async def generate_and_store_otp(
@@ -49,7 +68,7 @@ async def generate_and_store_otp(
     otp_record = OTPCode(
         owner_id=owner_id,
         owner_type=OwnerType(owner_type),
-        otp_code=otp_code,
+        otp_code=_hash_otp(otp_code),  # store only the bcrypt hash
         expires_at=expires_at,
         attempts=0,
         verified=False,
@@ -58,6 +77,7 @@ async def generate_and_store_otp(
     db.add(otp_record)
     await db.commit()
 
+    # Return the plaintext so the caller can email it; it is never persisted.
     return otp_code
 
 
@@ -108,7 +128,7 @@ async def verify_otp(
     # Verify
     otp_record.attempts += 1
 
-    if otp_record.otp_code != otp_code:
+    if not _otp_matches(otp_code, otp_record.otp_code):
         await db.commit()
         remaining = MAX_ATTEMPTS - otp_record.attempts
         raise HTTPException(

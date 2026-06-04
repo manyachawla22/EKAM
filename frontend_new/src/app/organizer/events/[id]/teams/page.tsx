@@ -17,7 +17,7 @@ import {
   listParticipants,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Team, Participant } from "@/types";
+import type { Team, Participant, TeamFormationConstraint } from "@/types";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
@@ -35,6 +35,15 @@ const inputBase: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+const ruleRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: "0.5rem",
+  fontSize: "0.85rem",
+  color: "rgba(255,255,255,0.7)",
+  flexWrap: "wrap",
+};
+
 export default function TeamsPage() {
   const { id } = useParams<{ id: string }>();
   const { user, loading: authLoading } = useAuth();
@@ -45,6 +54,14 @@ export default function TeamsPage() {
   const [loading, setLoading] = useState(true);
   const [autoForming, setAutoForming] = useState(false);
   const [teamSize, setTeamSize] = useState(4);
+
+  // Team-formation rules (constraints fed to the CP-SAT optimizer).
+  const [avoidSameCollege, setAvoidSameCollege] = useState(false);
+  const [genderDiversity, setGenderDiversity] = useState(false);
+  const [genderMin, setGenderMin] = useState(1);
+  const [balanceExperience, setBalanceExperience] = useState(false);
+  const [requiredSkill, setRequiredSkill] = useState("");
+  const [skillMinCount, setSkillMinCount] = useState(1);
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState("");
@@ -88,9 +105,14 @@ export default function TeamsPage() {
 
   const handleAutoForm = async () => {
     if (!id) return;
+    const constraints: TeamFormationConstraint[] = [];
+    if (avoidSameCollege) constraints.push({ type: "avoid_same_college" });
+    if (genderDiversity) constraints.push({ type: "gender_diversity", min_per_team: genderMin });
+    if (balanceExperience) constraints.push({ type: "balance_experience" });
+    if (requiredSkill.trim()) constraints.push({ type: "required_skill", skill: requiredSkill.trim(), min_count: skillMinCount });
     setAutoForming(true);
     try {
-      const result = await autoFormTeams(id, teamSize);
+      const result = await autoFormTeams(id, teamSize, constraints);
       if (result.success) {
         setTeams(result.teams);
         toast.success(result.message || `Formed ${result.teams.length} teams!`);
@@ -288,6 +310,74 @@ export default function TeamsPage() {
               <Zap size={16} /> Auto-Form
             </Button>
           </div>
+        </div>
+
+        {/* Formation rules → CP-SAT constraints */}
+        <div
+          style={{
+            marginTop: "1rem",
+            paddingTop: "1rem",
+            borderTop: "1px solid rgba(232,80,58,0.15)",
+          }}
+        >
+          <p
+            style={{
+              fontSize: "0.72rem",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              color: "rgba(255,255,255,0.4)",
+              margin: "0 0 0.6rem",
+            }}
+          >
+            Formation rules
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
+            <label style={ruleRow}>
+              <input type="checkbox" checked={avoidSameCollege} onChange={(e) => setAvoidSameCollege(e.target.checked)} />
+              <span>Avoid grouping members from the same institution</span>
+            </label>
+
+            <label style={ruleRow}>
+              <input type="checkbox" checked={balanceExperience} onChange={(e) => setBalanceExperience(e.target.checked)} />
+              <span>Balance experience levels across teams</span>
+            </label>
+
+            <div style={ruleRow}>
+              <input type="checkbox" checked={genderDiversity} onChange={(e) => setGenderDiversity(e.target.checked)} />
+              <span>Ensure at least</span>
+              <input
+                type="number" min={1} max={teamSize} value={genderMin}
+                disabled={!genderDiversity}
+                onChange={(e) => setGenderMin(Math.max(1, parseInt(e.target.value) || 1))}
+                style={{ ...inputBase, width: "3.25rem", textAlign: "center", opacity: genderDiversity ? 1 : 0.4 }}
+              />
+              <span>female member(s) per team</span>
+            </div>
+
+            <div style={ruleRow}>
+              <input
+                type="checkbox" checked={!!requiredSkill.trim()}
+                onChange={(e) => { if (!e.target.checked) setRequiredSkill(""); }}
+                readOnly={!requiredSkill.trim()}
+              />
+              <span>Require at least</span>
+              <input
+                type="number" min={1} max={teamSize} value={skillMinCount}
+                onChange={(e) => setSkillMinCount(Math.max(1, parseInt(e.target.value) || 1))}
+                style={{ ...inputBase, width: "3.25rem", textAlign: "center" }}
+              />
+              <span>member(s) with skill</span>
+              <input
+                type="text" value={requiredSkill} placeholder="e.g. Python"
+                onChange={(e) => setRequiredSkill(e.target.value)}
+                style={{ ...inputBase, width: "9rem" }}
+              />
+            </div>
+          </div>
+          <p style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.3)", margin: "0.6rem 0 0" }}>
+            Rules are best-effort — the optimizer satisfies them where the participant pool allows.
+          </p>
         </div>
       </div>
 

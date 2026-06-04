@@ -11,3 +11,5 @@ from .approval import ApprovalRequest
 from .email import EmailDraft
 from .anomaly import Anomaly
 from .notification import Notification
+from .rubric import RubricCriterion
+from .pipeline import EventPipeline

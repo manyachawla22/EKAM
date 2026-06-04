@@ -5,10 +5,10 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { ArrowLeft, Star, CheckCircle, ExternalLink, FileText } from "lucide-react";
+import { ArrowLeft, Star, CheckCircle, ExternalLink, FileText, Sparkles } from "lucide-react";
 import { toast } from "sonner";
-import { getEvaluations, submitEvaluation, getMe, getSubmission, listRoundRubric } from "@/lib/api";
-import type { Evaluation, RubricCriterion } from "@/types";
+import { getEvaluations, submitEvaluation, getMe, getSubmission, listRoundRubric, getAssessmentGuide } from "@/lib/api";
+import type { Evaluation, RubricCriterion, AssessmentGuide } from "@/types";
 import Button from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import Navbar from "@/components/layout/Navbar";
@@ -31,6 +31,8 @@ export default function EvaluatePage() {
   const [myJudgeId, setMyJudgeId] = useState<string | null>(null);
   const [criteria, setCriteria] = useState<RubricCriterion[]>([]);
   const [critScores, setCritScores] = useState<Record<string, number>>({});
+  const [guide, setGuide] = useState<AssessmentGuide | null>(null);
+  const [guideOpen, setGuideOpen] = useState(true);
 
   // Total = sum of per-criterion scores. Max = sum of criteria max_score.
   const totalScore = criteria.reduce((sum, c) => sum + (critScores[c.id] ?? 0), 0);
@@ -60,6 +62,9 @@ export default function EvaluatePage() {
           crit = await listRoundRubric(submission.round_id).catch(() => []);
           setCriteria(crit);
         }
+
+        // Load the AI-assisted assessment guide for this submission's challenge.
+        getAssessmentGuide(submissionId).then(setGuide).catch(() => setGuide(null));
 
         const mine = evals.find((e) => e.judge_id === me.id);
         if (mine) {
@@ -223,6 +228,79 @@ export default function EvaluatePage() {
                 <p style={{ fontSize: "0.875rem", color: "rgba(255,255,255,0.35)", margin: 0 }}>
                   No project materials were attached to this submission.
                 </p>
+              )}
+            </div>
+          )}
+
+          {/* Assessment guide */}
+          {!loading && guide && (
+            <div
+              style={{
+                borderRadius: "0.75rem",
+                border: "1px solid rgba(232,80,58,0.25)",
+                background: "linear-gradient(135deg, rgba(232,80,58,0.06), rgba(99,102,241,0.04))",
+                padding: "1.25rem",
+              }}
+            >
+              <button
+                onClick={() => setGuideOpen((o) => !o)}
+                style={{ display: "flex", alignItems: "center", gap: "0.5rem", width: "100%", background: "transparent", border: "none", cursor: "pointer", padding: 0, textAlign: "left" }}
+              >
+                <Sparkles size={16} color="#e8503a" />
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#fff", flex: 1 }}>
+                  Assessment Guide{guide.challenge ? ` · ${guide.challenge}` : ""}
+                </span>
+                <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>{guideOpen ? "Hide" : "Show"}</span>
+              </button>
+
+              {guideOpen && (
+                <div style={{ marginTop: "0.85rem", display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+                  {guide.overview && (
+                    <p style={{ margin: 0, fontSize: "0.85rem", color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
+                      {guide.overview}
+                    </p>
+                  )}
+
+                  {guide.criteria_guides?.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+                      {guide.criteria_guides.map((cg, i) => (
+                        <div key={i} style={{ borderRadius: "0.5rem", border: "1px solid #1e1e1e", background: "rgba(255,255,255,0.02)", padding: "0.65rem 0.8rem" }}>
+                          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "0.5rem" }}>
+                            <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#fff" }}>{cg.criterion}</span>
+                            {cg.max_score != null && (
+                              <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>max {cg.max_score}</span>
+                            )}
+                          </div>
+                          <p style={{ margin: "0.3rem 0 0", fontSize: "0.78rem", color: "rgba(255,255,255,0.65)", lineHeight: 1.45 }}>
+                            {cg.what_to_look_for}
+                          </p>
+                          {cg.scoring_tips && (
+                            <p style={{ margin: "0.3rem 0 0", fontSize: "0.74rem", color: "rgba(99,102,241,0.85)", lineHeight: 1.4 }}>
+                              {cg.scoring_tips}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {guide.key_questions?.length > 0 && (
+                    <div>
+                      <p style={{ margin: "0 0 0.35rem", fontSize: "0.72rem", fontWeight: 600, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        Key questions
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: "1.1rem", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                        {guide.key_questions.map((q, i) => (
+                          <li key={i} style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.6)", lineHeight: 1.4 }}>{q}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <span style={{ fontSize: "0.68rem", color: "rgba(255,255,255,0.3)" }}>
+                    {guide.generated_by === "ai" ? "AI-generated guidance — use your own judgment." : "Guidance derived from the round rubric."}
+                  </span>
+                </div>
               )}
             </div>
           )}

@@ -237,6 +237,25 @@ export interface ApprovalRequest {
 export interface ApprovalActionBody {
   action: ApprovalStatus; // approve | reject | revise (matches enum)
   review_notes?: string;
+  cutoff_score?: number; // for pipeline advancement approvals
+}
+
+// ─── Pipeline ─────────────────────────────────────────────────────────────────
+
+export interface PipelineStep {
+  id: string;
+  label: string;
+  round_id?: string;
+  status?: "done" | "active" | "upcoming";
+}
+
+export interface PipelineState {
+  steps: PipelineStep[];
+  current_step: string | null;
+  ready_to_advance: boolean;
+  next_step: string | null;
+  eliminated_team_ids: string[];
+  closed_submission_round_ids?: string[];
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
@@ -412,6 +431,7 @@ export interface ParticipantDashboard {
   team: { id: string; name: string; theme_id?: string | null; member_count?: number } | null;
   submissions: Array<{ id: string; round_id: string; final_score?: number | null; submitted_at?: string }>;
   progression_status: "pending" | "advancing" | "eliminated";
+  evaluators?: Array<{ id: string; name: string; institution?: string | null; expertise?: string[] }>;
   notifications: Array<{ id: string; title: string; message: string; type: string; created_at: string }>;
 }
 
@@ -434,6 +454,28 @@ export interface OrganizerDashboard {
   pending_approvals: Array<{ id: string; request_type: string; requested_by?: string | null; requested_at: string; status: string }>;
   anomalies: Array<{ id: string; anomaly_type: string; severity: number; description: string; created_at: string }>;
   rounds: Array<{ id: string; name: string; status: string; start_date?: string; end_date?: string }>;
+}
+
+export interface TeamFormationConstraint {
+  type: "avoid_same_college" | "gender_diversity" | "balance_experience" | "required_skill";
+  min_per_team?: number;
+  skill?: string;
+  min_count?: number;
+}
+
+export interface AssessmentGuideCriterion {
+  criterion: string;
+  max_score?: number;
+  what_to_look_for: string;
+  scoring_tips?: string;
+}
+
+export interface AssessmentGuide {
+  challenge: string;
+  overview: string;
+  criteria_guides: AssessmentGuideCriterion[];
+  key_questions: string[];
+  generated_by?: "ai" | "rules";
 }
 
 // ─── API Response Wrappers ────────────────────────────────────────────────────

@@ -36,13 +36,24 @@ async def register_participant_service(
                 setattr(existing_participant, key, value)
         await db.commit()
         await db.refresh(existing_participant)
+        await _autopropose(db, participant_data.event_id)
         return existing_participant
 
     participant = Participant(**participant_data.model_dump())
     db.add(participant)
     await db.commit()
     await db.refresh(participant)
+    await _autopropose(db, participant_data.event_id)
     return participant
+
+
+async def _autopropose(db, event_id) -> None:
+    """Pipeline: participants now exist → auto-propose the next transition."""
+    try:
+        from app.services.pipeline_service import autopropose
+        await autopropose(db, str(event_id))
+    except Exception as exc:
+        print(f"[participant_service] autopropose failed: {exc}")
 
 
 async def list_participants_service(

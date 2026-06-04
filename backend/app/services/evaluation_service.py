@@ -90,7 +90,7 @@ async def submit_evaluation_service(
             )
             round_obj = res_round.scalars().first()
             if round_obj and round_obj.event_id:
-                from app.services.anomaly_service import analyze_evaluation
+                from app.services.ml_anomaly_report_service import analyze_evaluation
                 await analyze_evaluation(db, str(round_obj.event_id), evaluation)
         except Exception as exc:
             # Anomaly detection must never block evaluation submission
@@ -106,115 +106,18 @@ async def submit_evaluation_service(
     return evaluation
 
 
-_NEXT_STAGE = {
-    "registration": "team_formation",
-    "team_formation": "submission",
-    "submission": "evaluation",
-    "evaluation": "results",
-    "results": "completed",
-}
-
-
-async def _is_round_fully_evaluated(db: AsyncSession, round_id) -> bool:
-    """True when every judge assignment for the round has a matching evaluation
-    on that team's submission."""
-    from app.models.judge import JudgeAssignment
-
-    assignments = (
-        await db.execute(
-            select(JudgeAssignment).where(JudgeAssignment.round_id == round_id)
-        )
-    ).scalars().all()
-    if not assignments:
-        return False
-
-    subs = (
-        await db.execute(select(Submission).where(Submission.round_id == round_id))
-    ).scalars().all()
-    sub_by_team = {s.team_id: s.id for s in subs}
-    if not sub_by_team:
-        return False
-
-    eval_rows = (
-        await db.execute(
-            select(Evaluation.judge_id, Evaluation.submission_id).where(
-                Evaluation.submission_id.in_(list(sub_by_team.values()))
-            )
-        )
-    ).all()
-    done = {(jid, sid) for jid, sid in eval_rows}
-
-    for a in assignments:
-        sid = sub_by_team.get(a.team_id)
-        if sid is None or (a.judge_id, sid) not in done:
-            return False
-    return True
-
-
 async def _maybe_autopropose_transition(db: AsyncSession, round_id) -> None:
-    """If the round is fully evaluated and no stage-transition approval is
-    pending, create one and notify the organizer."""
-    from app.models.approval import ApprovalRequest, ApprovalStatus, RequestType
-    from app.models.event import Event
-    from app.models.notification import NotificationType
-
-    if not await _is_round_fully_evaluated(db, round_id):
-        return
-
+    """Delegate to the dynamic pipeline: it checks the current step's condition
+    (e.g. round fully evaluated) and auto-proposes the next transition."""
     round_obj = (
         await db.execute(select(Round).where(Round.id == round_id))
     ).scalars().first()
-    if not round_obj:
+    if not round_obj or not round_obj.event_id:
         return
 
-    event = (
-        await db.execute(select(Event).where(Event.id == round_obj.event_id))
-    ).scalars().first()
-    if not event:
-        return
+    from app.services.pipeline_service import autopropose
 
-    current_stage = getattr(event.stage, "value", str(event.stage))
-    next_stage = _NEXT_STAGE.get(current_stage)
-    if not next_stage:
-        return
-
-    # Don't pile up duplicate proposals.
-    pending = (
-        await db.execute(
-            select(ApprovalRequest).where(
-                ApprovalRequest.event_id == event.id,
-                ApprovalRequest.request_type == RequestType.stage_transition,
-                ApprovalRequest.status == ApprovalStatus.pending,
-            )
-        )
-    ).scalars().first()
-    if pending:
-        return
-
-    from app.services.pipeline_service import propose_stage_transition
-    from app.services.notification_service import create_notification
-
-    await propose_stage_transition(
-        db=db,
-        event_id=str(event.id),
-        requested_by=str(event.organizer_id),
-        target_stage=next_stage,
-        cutoff_score=0.0,
-        round_id=str(round_id),
-    )
-
-    await create_notification(
-        db=db,
-        event_id=str(event.id),
-        user_id=str(event.organizer_id),
-        title="Round fully evaluated",
-        message=(
-            f"All assigned evaluations for '{round_obj.name}' are in. "
-            f"A transition to the {next_stage.replace('_', ' ')} stage has been "
-            f"proposed — review it in Approvals."
-        ),
-        notification_type=NotificationType.action_required,
-    )
+    await autopropose(db, str(round_obj.event_id))
 
 
 async def get_submission_evaluations_service(

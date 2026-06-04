@@ -70,7 +70,7 @@ async def list_reports_service(
 # =========================================================
 
 _PALETTE = [
-    "#6366f1", "#e8503a", "#059669", "#f59e0b", "#3b82f6",
+    "#e8503a", "#6366f1", "#059669", "#f59e0b", "#3b82f6",
     "#a855f7", "#14b8a6", "#ef4444", "#84cc16", "#ec4899",
 ]
 
@@ -102,16 +102,16 @@ def _bar_chart_svg(data: list[tuple[str, float]], title: str = "") -> str:
         bar_w = max(2, (value / max_value) * chart_w)
         color = _PALETTE[index % len(_PALETTE)]
         rows.append(
-            f'<text x="0" y="{y + 18}" font-size="13" fill="#cbd5e1">'
+            f'<text x="0" y="{y + 18}" font-size="13" fill="#aaaaaa">'
             f'{_esc(label)[:26]}</text>'
             f'<rect x="{label_w}" y="{y + 4}" width="{bar_w:.1f}" height="20" '
             f'rx="4" fill="{color}"></rect>'
             f'<text x="{label_w + bar_w + 8:.1f}" y="{y + 18}" font-size="12" '
-            f'fill="#f8fafc">{value:.1f}</text>'
+            f'fill="#ffffff">{value:.1f}</text>'
         )
 
     title_html = (
-        f"<div style='font-weight:600;color:#e2e8f0;margin-bottom:6px;'>"
+        f"<div style='font-weight:600;color:#f5f5f5;margin-bottom:6px;'>"
         f"{_esc(title)}</div>"
         if title
         else ""
@@ -158,7 +158,7 @@ def _pie_chart_svg(data: list[tuple[str, float]], title: str = "") -> str:
             )
         legend.append(
             f'<div style="display:flex;align-items:center;gap:6px;'
-            f'font-size:12px;color:#cbd5e1;margin:2px 0;">'
+            f'font-size:12px;color:#aaaaaa;margin:2px 0;">'
             f'<span style="width:10px;height:10px;border-radius:2px;'
             f'background:{color};display:inline-block;"></span>'
             f'{_esc(label)} — {value:.0f} ({frac * 100:.0f}%)</div>'
@@ -166,7 +166,7 @@ def _pie_chart_svg(data: list[tuple[str, float]], title: str = "") -> str:
         start_angle = end_angle
 
     title_html = (
-        f"<div style='font-weight:600;color:#e2e8f0;margin-bottom:6px;'>"
+        f"<div style='font-weight:600;color:#f5f5f5;margin-bottom:6px;'>"
         f"{_esc(title)}</div>"
         if title
         else ""
@@ -405,7 +405,7 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
         score_text = f"{r['score']:.1f}" if r["score"] is not None else "—"
         participant_table_parts.append(
             f"<tr><td style='padding:6px 10px;'>{_esc(r['name'])}</td>"
-            f"<td style='padding:6px 10px;color:#94a3b8;'>{_esc(r['email'])}</td>"
+            f"<td style='padding:6px 10px;color:#888888;'>{_esc(r['email'])}</td>"
             f"<td style='padding:6px 10px;'>{_esc(r['team'])}</td>"
             f"<td style='padding:6px 10px;font-weight:600;'>{score_text}</td></tr>"
         )
@@ -416,9 +416,9 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
     def stat_card(label: str, value: Any) -> str:
         return (
             f"<div style='flex:1;min-width:120px;padding:14px 16px;border:1px "
-            f"solid #1f2937;border-radius:12px;background:#0f172a;'>"
-            f"<div style='font-size:22px;font-weight:800;color:#f8fafc;'>{value}</div>"
-            f"<div style='font-size:12px;color:#94a3b8;'>{label}</div></div>"
+            f"solid #222222;border-radius:12px;background:#1a1a1a;'>"
+            f"<div style='font-size:22px;font-weight:800;color:#ffffff;'>{value}</div>"
+            f"<div style='font-size:12px;color:#888888;'>{label}</div></div>"
         )
 
     cards = "".join([
@@ -432,15 +432,15 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
     ])
 
     section_style = (
-        "margin:24px 0;padding:18px;border:1px solid #1f2937;"
-        "border-radius:14px;background:#0b1220;"
+        "margin:24px 0;padding:18px;border:1px solid #222222;"
+        "border-radius:14px;background:#111111;"
     )
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Event Report — {_esc(event.name)}</title></head>
-<body style="margin:0;background:#020617;font-family:'Segoe UI',Arial,sans-serif;color:#e2e8f0;">
+<body style="margin:0;background:#0a0a0a;font-family:Inter,system-ui,-apple-system,'Segoe UI',sans-serif;color:#f5f5f5;">
 <div style="max-width:900px;margin:0 auto;padding:28px;">
-  <div style="padding:24px;border-radius:16px;background:linear-gradient(135deg,#4338ca,#e8503a);color:#fff;">
+  <div style="padding:24px;border-radius:16px;background:linear-gradient(135deg,#e8503a,#d4432e);color:#fff;">
     <h1 style="margin:0;font-size:26px;">Event Summary Report</h1>
     <p style="margin:6px 0 0;font-size:15px;opacity:0.9;">{_esc(event.name)} · {_esc(event.type)} · stage: {_esc(getattr(event.stage, 'value', event.stage))}</p>
   </div>
@@ -451,7 +451,7 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
     <h2 style="margin:0 0 12px;font-size:17px;">🏆 Final Standings</h2>
     {standings_chart}
     <table style="width:100%;border-collapse:collapse;margin-top:14px;font-size:13px;">
-      <thead><tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #1f2937;">
+      <thead><tr style="text-align:left;color:#888888;border-bottom:1px solid #222222;">
         <th style="padding:6px 10px;">#</th><th style="padding:6px 10px;">Team</th><th style="padding:6px 10px;">Avg Score</th>
       </tr></thead>
       <tbody>{standings_rows}</tbody>
@@ -476,7 +476,7 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
   <div style="{section_style}">
     <h2 style="margin:0 0 12px;font-size:17px;">👥 Participant Performance</h2>
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
-      <thead><tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #1f2937;">
+      <thead><tr style="text-align:left;color:#888888;border-bottom:1px solid #222222;">
         <th style="padding:6px 10px;">Participant</th><th style="padding:6px 10px;">Email</th>
         <th style="padding:6px 10px;">Team</th><th style="padding:6px 10px;">Team Avg</th>
       </tr></thead>
@@ -486,13 +486,13 @@ def _build_summary_html(d: dict) -> tuple[str, dict]:
 
   <div style="{section_style}">
     <h2 style="margin:0 0 12px;font-size:17px;">⚠️ Anomaly Detection</h2>
-    <p style="font-size:13px;color:#cbd5e1;margin:0;">
+    <p style="font-size:13px;color:#aaaaaa;margin:0;">
       {stats['anomalies']} scoring {'anomaly' if stats['anomalies'] == 1 else 'anomalies'}
       flagged by the IsolationForest ML model across {stats['evaluations']} evaluations.
     </p>
   </div>
 
-  <p style="text-align:center;color:#475569;font-size:12px;margin-top:28px;">
+  <p style="text-align:center;color:#555555;font-size:12px;margin-top:28px;">
     Generated by EKAM · Team EKAM
   </p>
 </div></body></html>"""

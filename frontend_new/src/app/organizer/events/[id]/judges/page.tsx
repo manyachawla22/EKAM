@@ -115,7 +115,7 @@ export default function JudgesPage() {
     if (!id) return;
     setAutoAssigning(true);
     try {
-      const result = await autoAssignJudges(id, 2);
+      const result = await autoAssignJudges(id, 3);
       toast.success(result.message || "Auto-assigned judges — review in Approvals.");
       const updated = await listJudges(id);
       setJudges(updated);

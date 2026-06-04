@@ -82,7 +82,48 @@ async def get_approval(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Approval request not found"
         )
-        
+
+    return approval
+
+
+async def update_approval_payload(
+    db: AsyncSession,
+    approval_id: str,
+    payload: dict,
+) -> ApprovalRequest:
+    """Edit a pending approval's proposal before it is approved.
+
+    For email batches, propagate subject/body edits to the linked EmailDraft
+    rows so the eventual send reflects the changes.
+    """
+    approval = await get_approval(db, approval_id)
+
+    if approval.status != ApprovalStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot edit a request that is already {approval.status.value}",
+        )
+
+    approval.payload = payload
+
+    if approval.request_type == RequestType.email_batch:
+        from app.models.email import EmailDraft
+
+        drafts = (
+            await db.execute(
+                select(EmailDraft).where(EmailDraft.approval_id == approval.id)
+            )
+        ).scalars().all()
+        for d in drafts:
+            if payload.get("subject"):
+                d.subject = payload["subject"]
+            if payload.get("body_html") is not None:
+                d.body_html = payload["body_html"]
+            if payload.get("body_text") is not None:
+                d.body_text = payload["body_text"]
+
+    await db.commit()
+    await db.refresh(approval)
     return approval
 
 
@@ -91,24 +132,29 @@ async def review_approval(
     approval_id: str,
     action: ApprovalStatus,
     reviewer_id: str,
-    notes: str | None = None
+    notes: str | None = None,
+    cutoff_score: float | None = None,
 ) -> ApprovalRequest:
     """Approve, reject, or request revision on an approval request."""
-    
+
     if action not in [ApprovalStatus.approved, ApprovalStatus.rejected, ApprovalStatus.revised]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid action. Must be approved, rejected, or revised."
         )
-        
+
     approval = await get_approval(db, approval_id)
-    
+
     if approval.status != ApprovalStatus.pending:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot review request that is already {approval.status.value}"
         )
-        
+
+    # Let the organizer set the advancement cutoff at approval time.
+    if cutoff_score is not None and approval.request_type == RequestType.stage_transition:
+        approval.payload = {**(approval.payload or {}), "cutoff_score": cutoff_score}
+
     approval.status = action
     approval.reviewed_by = reviewer_id
     approval.review_notes = notes

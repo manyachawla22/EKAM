@@ -1,8 +1,8 @@
-"""initial_schema
+"""baseline schema from models
 
-Revision ID: 66914dc449f0
+Revision ID: 47320f90e008
 Revises: 
-Create Date: 2026-05-31 21:29:15.533640
+Create Date: 2026-06-04 05:12:47.361690
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '66914dc449f0'
+revision: str = '47320f90e008'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -38,7 +38,7 @@ def upgrade() -> None:
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('owner_id', sa.UUID(), nullable=False),
     sa.Column('owner_type', sa.Enum('organizer', 'admin', 'participant', 'judge', name='ownertype'), nullable=False),
-    sa.Column('otp_code', sa.String(length=6), nullable=False),
+    sa.Column('otp_code', sa.String(length=255), nullable=False),
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('attempts', sa.Integer(), nullable=False),
     sa.Column('verified', sa.Boolean(), nullable=False),
@@ -83,7 +83,7 @@ def upgrade() -> None:
     sa.Column('description', sa.Text(), nullable=True),
     sa.Column('type', sa.String(), nullable=False),
     sa.Column('status', sa.Enum('draft', 'active', 'completed', 'archived', name='eventstatus'), nullable=True),
-    sa.Column('stage', sa.Enum('registration', 'team_formation', 'submission', 'evaluation', 'completed', name='eventstage'), nullable=True),
+    sa.Column('stage', sa.Enum('registration', 'team_formation', 'submission', 'evaluation', 'results', 'completed', name='eventstage'), nullable=True),
     sa.Column('team_formation_type', sa.Enum('platform_generated', 'preformed', name='teamformationtype'), nullable=True),
     sa.Column('min_team_size', sa.Integer(), nullable=True),
     sa.Column('max_team_size', sa.Integer(), nullable=True),
@@ -113,6 +113,16 @@ def upgrade() -> None:
     op.create_index(op.f('ix_approval_requests_event_id'), 'approval_requests', ['event_id'], unique=False)
     op.create_index(op.f('ix_approval_requests_request_type'), 'approval_requests', ['request_type'], unique=False)
     op.create_index(op.f('ix_approval_requests_status'), 'approval_requests', ['status'], unique=False)
+    op.create_table('event_pipeline',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('event_id', sa.UUID(), nullable=False),
+    sa.Column('current_step', sa.String(), nullable=False),
+    sa.Column('data', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.ForeignKeyConstraint(['event_id'], ['events.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_event_pipeline_event_id'), 'event_pipeline', ['event_id'], unique=True)
     op.create_table('judges',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('event_id', sa.UUID(), nullable=False),
@@ -202,7 +212,7 @@ def upgrade() -> None:
     op.create_table('email_drafts',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('event_id', sa.UUID(), nullable=False),
-    sa.Column('email_type', sa.Enum('otp', 'magic_link', 'invitation', 'team_assignment', 'stage_update', 'reminder', 'result', 'progression', name='emailtype'), nullable=False),
+    sa.Column('email_type', sa.Enum('otp', 'magic_link', 'invitation', 'team_assignment', 'stage_update', 'reminder', 'result', 'progression', 'certificate', name='emailtype'), nullable=False),
     sa.Column('recipient_email', sa.String(), nullable=False),
     sa.Column('recipient_name', sa.String(), nullable=True),
     sa.Column('subject', sa.String(), nullable=False),
@@ -220,6 +230,18 @@ def upgrade() -> None:
     op.create_index(op.f('ix_email_drafts_event_id'), 'email_drafts', ['event_id'], unique=False)
     op.create_index(op.f('ix_email_drafts_recipient_email'), 'email_drafts', ['recipient_email'], unique=False)
     op.create_index(op.f('ix_email_drafts_status'), 'email_drafts', ['status'], unique=False)
+    op.create_table('rubric_criteria',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('round_id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.String(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('max_score', sa.Float(), nullable=False),
+    sa.Column('position', sa.Integer(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=True),
+    sa.ForeignKeyConstraint(['round_id'], ['rounds.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_rubric_criteria_round_id'), 'rubric_criteria', ['round_id'], unique=False)
     op.create_table('teams',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('event_id', sa.UUID(), nullable=False),
@@ -326,6 +348,8 @@ def downgrade() -> None:
     op.drop_table('submissions')
     op.drop_table('judge_assignments')
     op.drop_table('teams')
+    op.drop_index(op.f('ix_rubric_criteria_round_id'), table_name='rubric_criteria')
+    op.drop_table('rubric_criteria')
     op.drop_index(op.f('ix_email_drafts_status'), table_name='email_drafts')
     op.drop_index(op.f('ix_email_drafts_recipient_email'), table_name='email_drafts')
     op.drop_index(op.f('ix_email_drafts_event_id'), table_name='email_drafts')
@@ -340,6 +364,8 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_notifications_event_id'), table_name='notifications')
     op.drop_table('notifications')
     op.drop_table('judges')
+    op.drop_index(op.f('ix_event_pipeline_event_id'), table_name='event_pipeline')
+    op.drop_table('event_pipeline')
     op.drop_index(op.f('ix_approval_requests_status'), table_name='approval_requests')
     op.drop_index(op.f('ix_approval_requests_request_type'), table_name='approval_requests')
     op.drop_index(op.f('ix_approval_requests_event_id'), table_name='approval_requests')

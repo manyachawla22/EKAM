@@ -15,6 +15,7 @@ import {
   googleProvider,
 } from "@/lib/firebase";
 import { loginUser, getRoleDashboard, requestOtpAccess, verifyOtpAccess } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import ParticleBackground from "@/components/landing/ParticleBackground";
 import Button from "@/components/ui/Button";
 import type { UserRole } from "@/types";
@@ -57,6 +58,7 @@ const iconWrapStyle: React.CSSProperties = {
 
 export default function LoginPage() {
   const router = useRouter();
+  const { refreshProfile } = useAuth();
 
   const [loginMode, setLoginMode] = useState<LoginMode>("organizer");
 
@@ -134,6 +136,12 @@ export default function LoginPage() {
     setOtpLoading(true);
     try {
       const resp = await verifyOtpAccess(otpEmail, eventHash, otp);
+      // Populate the shared auth context from the new EKAM token BEFORE we
+      // navigate. Participants/judges have no Firebase session, so the provider's
+      // onAuthStateChanged listener never fires for them — without this the
+      // destination page reads a null profile and shows "Please log in" until a
+      // manual refresh.
+      await refreshProfile();
       toast.success("Logged in!");
       if (resp.actor_type === "participant" && resp.event_id) {
         router.push(`/participant/events/${resp.event_id}`);

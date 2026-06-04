@@ -1,5 +1,6 @@
-from typing import List
-from fastapi import APIRouter, Depends
+from typing import List, Any, Dict
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -16,7 +17,12 @@ from app.services.approval_service import (
     list_approval_history,
     get_approval,
     review_approval,
+    update_approval_payload,
 )
+
+
+class ApprovalPayloadUpdate(BaseModel):
+    payload: Dict[str, Any]
 
 router = APIRouter(
     prefix="/approvals",
@@ -103,5 +109,29 @@ async def review_approval_request(
         approval_id=approval_id,
         action=action.action,
         reviewer_id=auth.actor_id,
-        notes=action.review_notes
+        notes=action.review_notes,
+        cutoff_score=action.cutoff_score,
     )
+
+
+@router.patch(
+    "/{event_id}/{approval_id}",
+    response_model=ApprovalRequestResponse,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def edit_approval(
+    event_id: str,
+    approval_id: str,
+    body: ApprovalPayloadUpdate,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a pending approval's proposal (save without approving)."""
+    if not auth.can_access_event(event_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="No event access"
+        )
+    return await update_approval_payload(db, approval_id, body.payload)

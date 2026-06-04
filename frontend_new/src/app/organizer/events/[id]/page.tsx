@@ -22,19 +22,18 @@ import {
   deleteEvent,
   autoFormTeams,
   autoAssignJudges,
-  proposeStageTransition,
+  getPipelineState,
+  advancePipeline,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import type { Event, EventStatus, EventStage, Round, OrganizerDashboard, Theme } from "@/types";
+import type { Event, EventStatus, Round, OrganizerDashboard, Theme, PipelineState } from "@/types";
 import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
+import DynamicPipeline from "@/components/pipeline/DynamicPipeline";
 
 const STATUSES: EventStatus[] = ["draft", "active", "completed", "archived"];
-const ALL_STAGES: EventStage[] = [
-  "registration", "team_formation", "submission", "evaluation", "results", "completed",
-];
 
 const card: React.CSSProperties = {
   borderRadius: "0.75rem",
@@ -71,10 +70,12 @@ export default function EventDetailPage() {
 
   const [event, setEvent] = useState<Event | null>(null);
   const [dashboard, setDashboard] = useState<OrganizerDashboard | null>(null);
+  const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [rounds, setRounds] = useState<Round[]>([]);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [themeName, setThemeName] = useState("");
   const [themeDesc, setThemeDesc] = useState("");
+  const [themeSkills, setThemeSkills] = useState("");
   const [themeBusy, setThemeBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -92,23 +93,24 @@ export default function EventDetailPage() {
   const [teamSize, setTeamSize] = useState(4);
   const [selectedRound, setSelectedRound] = useState("");
   const [cutoffScore, setCutoffScore] = useState(60);
-  const [targetStage, setTargetStage] = useState<EventStage>("results");
   const [actionLoading, setActionLoading] = useState(false);
 
   const fetchAll = async () => {
     if (!id) return;
     setLoading(true);
     try {
-      const [ev, dash, rds, thms] = await Promise.all([
+      const [ev, dash, rds, thms, pipe] = await Promise.all([
         getEvent(id),
         getOrganizerDashboard(id).catch(() => null),
         listRounds(id).catch(() => [] as Round[]),
         listThemes(id).catch(() => [] as Theme[]),
+        getPipelineState(id).catch(() => null),
       ]);
       setEvent(ev);
       setDashboard(dash);
       setRounds(rds);
       setThemes(thms);
+      setPipeline(pipe);
       setEditForm({
         name: ev.name, type: ev.type, description: ev.description,
         status: ev.status, max_participants: ev.max_participants,
@@ -148,12 +150,18 @@ export default function EventDetailPage() {
     if (!themeName.trim()) { toast.error("Theme name is required"); return; }
     setThemeBusy(true);
     try {
+      const required_skills = themeSkills
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       await createTheme(id, {
         name: themeName.trim(),
         description: themeDesc.trim() || undefined,
+        required_skills: required_skills.length ? required_skills : undefined,
       });
       setThemeName("");
       setThemeDesc("");
+      setThemeSkills("");
       setThemes(await listThemes(id).catch(() => themes));
       toast.success("Theme added");
     } catch (err) {
@@ -214,32 +222,17 @@ export default function EventDetailPage() {
     }
   };
 
-  const handleProposeTransition = async () => {
+  // Advance the *dynamic* pipeline by one real step (team_formation →
+  // theme_selection → judge_assignment → per-round steps → …) instead of the
+  // coarse, hardcoded stage list — so no intermediate stage is skipped.
+  const handleAdvancePipeline = async (cutoff = 0) => {
     setActionLoading(true);
     try {
-      const result = await proposeStageTransition(id, targetStage, cutoffScore);
-      toast.success(`${result.message} Review in Approvals.`);
-      fetchAll();
+      const res = await advancePipeline(id, cutoff);
+      toast.success(res.message || "Pipeline advanced.");
+      await fetchAll();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Transition failed");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleAdvanceStage = async () => {
-    if (!event) return;
-    const idx = ALL_STAGES.indexOf(event.stage);
-    const next = idx >= 0 && idx < ALL_STAGES.length - 1 ? ALL_STAGES[idx + 1] : null;
-    if (!next) return;
-    setActionLoading(true);
-    try {
-      const updated = await updateEvent(id, { stage: next });
-      setEvent(updated);
-      toast.success(`Stage advanced to ${next.replace("_", " ")}.`);
-      fetchAll();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to advance stage");
+      toast.error(err instanceof Error ? err.message : "Failed to advance pipeline");
     } finally {
       setActionLoading(false);
     }
@@ -270,9 +263,19 @@ export default function EventDetailPage() {
     );
   }
 
-  const stageIdx = ALL_STAGES.indexOf(event.stage);
-  const nextStage =
-    stageIdx >= 0 && stageIdx < ALL_STAGES.length - 1 ? ALL_STAGES[stageIdx + 1] : null;
+  // Dynamic-pipeline position drives the stage actions so we follow the real
+  // per-round steps instead of the coarse, hardcoded stage list.
+  const pipeSteps = pipeline?.steps ?? [];
+  const activeStep = pipeSteps.find((s) => s.status === "active") ?? null;
+  const activeStepId = activeStep?.id ?? "";
+  const nextStep = pipeline?.next_step
+    ? pipeSteps.find((s) => s.id === pipeline.next_step) ?? null
+    : null;
+  // Steps whose advance involves a scoring cutoff / elimination — those are
+  // driven by the cutoff control (and auto-proposed for approval), not the
+  // one-click direct advance.
+  const isScoringStep =
+    activeStepId.endsWith(":advancement") || activeStepId === "winner_announcement";
 
   // Stats from dashboard
   const stats = dashboard?.stats ?? {
@@ -348,44 +351,21 @@ export default function EventDetailPage() {
           <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "1rem" }}>
             Event Pipeline
           </p>
-          <div style={{ display: "flex", alignItems: "center" }}>
-            {ALL_STAGES.map((stage, i) => {
-              const isPast = i < stageIdx;
-              const isActive = i === stageIdx;
-              return (
-                <div key={stage} style={{ display: "flex", alignItems: "center", flex: i < ALL_STAGES.length - 1 ? 1 : undefined }}>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.375rem" }}>
-                    <div style={{
-                      width: "14px", height: "14px", borderRadius: "9999px", flexShrink: 0,
-                      background: isPast ? "#4ade80" : isActive ? "#e8503a" : "#333",
-                      border: `2px solid ${isPast ? "#4ade80" : isActive ? "#e8503a" : "#555"}`,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}>
-                      {isPast && <CheckCircle2 size={8} color="#0a0a0a" />}
-                    </div>
-                    <span style={{ fontSize: "0.6rem", color: isActive ? "#e8503a" : isPast ? "#4ade80" : "rgba(255,255,255,0.3)", textTransform: "capitalize", textAlign: "center", maxWidth: "52px" }}>
-                      {stage.replace("_", " ")}
-                    </span>
-                  </div>
-                  {i < ALL_STAGES.length - 1 && (
-                    <div style={{ flex: 1, height: "2px", background: i < stageIdx ? "#4ade80" : "#333", margin: "0 0.25rem", marginBottom: "1.25rem" }} />
-                  )}
-                </div>
-              );
-            })}
-          </div>
 
-          {/* Active stage action */}
+          {/* Single dynamic, per-round pipeline (adapts to the number of rounds). */}
+          <DynamicPipeline eventId={id} />
+
+          {/* Active stage action — driven by the dynamic pipeline's current step */}
           <div style={{ marginTop: "1.25rem", padding: "1rem", borderRadius: "0.5rem", background: "rgba(232,80,58,0.06)", border: "1px solid rgba(232,80,58,0.12)" }}>
             <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "#e8503a", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.75rem" }}>
-              Active Stage: {event.stage.replace("_", " ")}
+              Active Stage: {activeStep?.label ?? event.stage.replace("_", " ")}
             </p>
-            {event.stage === "registration" && (
+            {activeStepId === "registration" && (
               <Link href={`/organizer/events/${id}/participants`} style={{ fontSize: "0.875rem", color: "#6366f1", textDecoration: "underline" }}>
                 View Participants →
               </Link>
             )}
-            {event.stage === "team_formation" && (
+            {activeStepId === "team_formation" && (
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
                 <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Team Size:</label>
                 <input type="number" min={2} max={10} value={teamSize} onChange={(e) => setTeamSize(Number(e.target.value))}
@@ -395,7 +375,15 @@ export default function EventDetailPage() {
                 </Button>
               </div>
             )}
-            {event.stage === "submission" && (
+            {activeStepId === "theme_selection" && (
+              <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.6)", margin: 0 }}>
+                Waiting for teams to pick their theme & team name.{" "}
+                <Link href={`/organizer/events/${id}/teams`} style={{ color: "#6366f1", textDecoration: "underline" }}>
+                  View Teams →
+                </Link>
+              </p>
+            )}
+            {activeStepId === "judge_assignment" && (
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
                 <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Auto-Assign Judges</label>
                 <Button variant="primary" onClick={handleAutoAssignJudges} loading={actionLoading}>
@@ -403,38 +391,52 @@ export default function EventDetailPage() {
                 </Button>
               </div>
             )}
-            {(event.stage === "evaluation" || event.stage === "results") && (
+            {activeStepId.endsWith(":submission") && (
+              <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.6)", margin: 0 }}>
+                Waiting for teams to submit for this round.{" "}
+                <Link href={`/organizer/events/${id}/submissions`} style={{ color: "#6366f1", textDecoration: "underline" }}>
+                  View Submissions →
+                </Link>
+              </p>
+            )}
+            {activeStepId.endsWith(":evaluation") && (
+              <p style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.6)", margin: 0 }}>
+                Waiting for judges to finish evaluating this round.{" "}
+                <Link href={`/organizer/events/${id}/submissions`} style={{ color: "#6366f1", textDecoration: "underline" }}>
+                  View Submissions →
+                </Link>
+              </p>
+            )}
+            {isScoringStep && (
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-                <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Cutoff:</label>
+                <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Qualifying cutoff:</label>
                 <input type="number" min={0} max={100} value={cutoffScore} onChange={(e) => setCutoffScore(Number(e.target.value))}
                   style={{ ...inputBase, width: "5rem" }} />
-                <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Advance to:</label>
-                <select value={targetStage} onChange={(e) => setTargetStage(e.target.value as EventStage)}
-                  style={{ ...inputBase, width: "auto" }}>
-                  {["results", "completed"].map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-                <Button variant="primary" onClick={handleProposeTransition} loading={actionLoading}>
-                  Propose Transition
+                <Button variant="primary" onClick={() => handleAdvancePipeline(cutoffScore)} loading={actionLoading}>
+                  Advance to {nextStep?.label ?? "next step"} →
                 </Button>
+                <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
+                  Teams at or above the cutoff advance; the rest are eliminated.
+                </span>
               </div>
             )}
-            {event.stage === "completed" && (
+            {activeStepId === "completed" && (
               <div style={{ display: "flex", gap: "0.75rem" }}>
                 <Link href={`/organizer/events/${id}/leaderboard`} style={{ fontSize: "0.875rem", color: "#6366f1", textDecoration: "underline" }}>View Leaderboard →</Link>
                 <Link href={`/organizer/events/${id}/reports`} style={{ fontSize: "0.875rem", color: "#6366f1", textDecoration: "underline" }}>Generate Report →</Link>
               </div>
             )}
 
-            {/* Direct stage advance — moves the pipeline forward one step.
-                Use this to progress between rounds; the cutoff "Propose Transition"
-                above runs the approval-gated progression with notifications. */}
-            {nextStage && (
+            {/* Direct advance — moves the dynamic pipeline forward by one real
+                step. Hidden for scoring steps (handled by the cutoff control
+                above) and once the pipeline is complete. */}
+            {nextStep && !isScoringStep && (
               <div style={{ marginTop: "0.875rem", paddingTop: "0.875rem", borderTop: "1px solid rgba(232,80,58,0.15)", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
                 <span style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.45)" }}>
-                  Done with this stage?
+                  {pipeline?.ready_to_advance ? "This step is complete." : "Done with this step?"}
                 </span>
-                <Button variant="secondary" onClick={handleAdvanceStage} loading={actionLoading}>
-                  Advance to {nextStage.replace("_", " ")} →
+                <Button variant="secondary" onClick={() => handleAdvancePipeline(0)} loading={actionLoading}>
+                  Advance to {nextStep.label} →
                 </Button>
               </div>
             )}
@@ -461,6 +463,26 @@ export default function EventDetailPage() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "#fff", margin: 0 }}>{t.name}</p>
                     {t.description && <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>{t.description}</p>}
+                    {(t.required_skills?.length ?? 0) > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", marginTop: "0.4rem" }}>
+                        {t.required_skills!.map((skill) => (
+                          <span
+                            key={skill}
+                            style={{
+                              fontSize: "0.68rem",
+                              fontWeight: 500,
+                              color: "#e8503a",
+                              background: "rgba(232,80,58,0.1)",
+                              border: "1px solid rgba(232,80,58,0.25)",
+                              borderRadius: "9999px",
+                              padding: "0.1rem 0.5rem",
+                            }}
+                          >
+                            {skill}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -487,6 +509,13 @@ export default function EventDetailPage() {
               value={themeDesc}
               onChange={(e) => setThemeDesc(e.target.value)}
               placeholder="Description (optional)"
+              style={{ ...inputBase, flex: "3 1 14rem", width: "auto" }}
+            />
+            <input
+              value={themeSkills}
+              onChange={(e) => setThemeSkills(e.target.value)}
+              placeholder="Required skills — comma separated (e.g. React, ML)"
+              title="Skills judges should have to evaluate this theme — used for judge mapping"
               style={{ ...inputBase, flex: "3 1 14rem", width: "auto" }}
             />
             <Button type="submit" variant="primary" loading={themeBusy}>

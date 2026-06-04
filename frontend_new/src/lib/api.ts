@@ -10,6 +10,7 @@ import type {
   JudgeAssignment,
   ApprovalRequest,
   ApprovalActionBody,
+  PipelineState,
   Notification,
   Anomaly,
   Submission,
@@ -17,6 +18,8 @@ import type {
   Report,
   Theme,
   RubricCriterion,
+  AssessmentGuide,
+  TeamFormationConstraint,
   TeamPreference,
   ParticipantDashboard,
   JudgeDashboard,
@@ -393,15 +396,16 @@ export async function listTeams(eventId: string): Promise<Team[]> {
 
 export async function autoFormTeams(
   eventId: string,
-  teamSize: number = 4
+  teamSize: number = 4,
+  constraints: TeamFormationConstraint[] = []
 ): Promise<AutoFormTeamsResponse> {
   // URL moved from /teams/auto-form/{eventId} to /teams/{eventId}/auto-form in
   // PR #7. The endpoint now creates an ApprovalRequest instead of committing
   // teams directly, so the response shape is different — we wrap it back into
   // the legacy AutoFormTeamsResponse shape so the existing UI still works.
   const raw = await apiFetch<{ message: string; approval_id: string }>(
-    `/teams/${eventId}/auto-form?team_size=${teamSize}`,
-    { method: "POST" }
+    `/teams/${eventId}/auto-form`,
+    { method: "POST", body: JSON.stringify({ team_size: teamSize, constraints }) }
   );
   return {
     success: true,
@@ -461,6 +465,12 @@ export async function getEvaluations(
   submissionId: string
 ): Promise<Evaluation[]> {
   return apiFetch<Evaluation[]>(`/evaluations/${submissionId}`);
+}
+
+export async function getAssessmentGuide(
+  submissionId: string
+): Promise<AssessmentGuide> {
+  return apiFetch<AssessmentGuide>(`/evaluations/guide/${submissionId}`);
 }
 
 // ─── JUDGES ───────────────────────────────────────────────────────────────────
@@ -539,7 +549,7 @@ export async function listRoundJudges(roundId: string): Promise<JudgeAssignment[
 
 export async function autoAssignJudges(
   eventId: string,
-  judgesPerTeam: number = 2
+  judgesPerTeam: number = 3
 ): Promise<{ message: string; approval_id: string }> {
   return apiFetch<{ message: string; approval_id: string }>(
     `/judges/${eventId}/auto-assign?judges_per_team=${judgesPerTeam}`,
@@ -623,6 +633,18 @@ export async function reviewApproval(
       body: JSON.stringify(body),
     }
   );
+}
+
+// Save edits to a pending approval's proposal (without approving).
+export async function updateApproval(
+  eventId: string,
+  approvalId: string,
+  payload: Record<string, unknown>
+): Promise<ApprovalRequest> {
+  return apiFetch<ApprovalRequest>(`/approvals/${eventId}/${approvalId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ payload }),
+  });
 }
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
@@ -812,6 +834,25 @@ export async function proposeStageTransition(
       body: JSON.stringify({ target_stage: targetStage, cutoff_score: cutoffScore }),
     }
   );
+}
+
+export async function getPipelineState(eventId: string): Promise<PipelineState> {
+  return apiFetch<PipelineState>(`/pipeline/${eventId}/state`);
+}
+
+export async function advancePipeline(
+  eventId: string,
+  cutoffScore = 0
+): Promise<{
+  advanced: boolean;
+  current_step: string | null;
+  next_step: string | null;
+  message: string;
+}> {
+  return apiFetch(`/pipeline/${eventId}/advance`, {
+    method: "POST",
+    body: JSON.stringify({ cutoff_score: cutoffScore }),
+  });
 }
 
 // ─── WINNERS ──────────────────────────────────────────────────────────────────

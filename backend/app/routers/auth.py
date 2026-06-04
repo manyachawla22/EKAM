@@ -135,11 +135,23 @@ async def request_access(
     Participants & Judges request access (OTP + Magic Link).
     Email is sent to the user.
     """
-    return await request_access_service(
-        db=db,
-        email=data.email,
-        event_hash=data.event_hash
-    )
+    try:
+        return await request_access_service(
+            db=db,
+            email=data.email,
+            event_hash=data.event_hash
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Convert to an HTTPException so the CORS middleware still attaches its
+        # headers. An unhandled 500 escapes the CORS layer and the browser then
+        # misreports it as "No Access-Control-Allow-Origin" / "Failed to fetch".
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"request-access failed: {type(exc).__name__}: {exc}",
+        )
 
 
 @router.post("/verify-otp", response_model=TokenResponse)
@@ -154,14 +166,23 @@ async def verify_otp(
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
-    return await verify_otp_service(
-        db=db,
-        email=data.email,
-        event_hash=data.event_hash,
-        otp=data.otp,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
+    try:
+        return await verify_otp_service(
+            db=db,
+            email=data.email,
+            event_hash=data.event_hash,
+            otp=data.otp,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"verify-otp failed: {type(exc).__name__}: {exc}",
+        )
 
 
 @router.post("/magic-login", response_model=TokenResponse)
@@ -176,12 +197,21 @@ async def magic_login(
     ip_address = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
 
-    return await magic_login_service(
-        db=db,
-        token=data.token,
-        ip_address=ip_address,
-        user_agent=user_agent,
-    )
+    try:
+        return await magic_login_service(
+            db=db,
+            token=data.token,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"magic-login failed: {type(exc).__name__}: {exc}",
+        )
 
 
 @router.post("/refresh", response_model=TokenResponse)

@@ -11,7 +11,22 @@ app = FastAPI(
 
 # CORS configuration
 # Note: when allow_credentials=True, allow_origins cannot be "*" per the CORS
-# spec — browsers refuse the response. List concrete dev origins here.
+# spec — browsers refuse the response. Instead we whitelist concrete origins AND
+# match a regex so participants/judges hitting the app from another device on the
+# LAN (or via an ngrok tunnel) aren't blocked with a "No Access-Control-Allow-
+# Origin" error. The regex covers localhost, loopback, private LAN ranges on any
+# port, and ngrok hosts; each request still echoes back its own specific origin.
+_CORS_ALLOW_ORIGIN_REGEX = (
+    r"^https?://("
+    r"localhost"
+    r"|127\.0\.0\.1"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}"
+    r"|192\.168\.\d{1,3}\.\d{1,3}"
+    r")(:\d+)?$"
+    r"|^https://[a-z0-9-]+\.ngrok(-free)?\.(app|io)$"
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -19,6 +34,7 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://172.28.33.80:3000",
     ],
+    allow_origin_regex=_CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],

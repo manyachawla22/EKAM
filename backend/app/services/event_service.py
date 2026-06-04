@@ -3,7 +3,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.event import Event
+from app.models.event import Event, EventStatus
 from app.models.user import User, UserRole
 from app.schemas.event import EventCreate, EventUpdate
 
@@ -24,6 +24,11 @@ async def create_event_service(
         )
 
     event = Event(**event_data.model_dump())
+    # A freshly created event is live (registration open), not a perpetual
+    # draft — otherwise the status badge never leaves "draft". The pipeline
+    # flips it to "completed" when the event finishes.
+    if event.status in (None, EventStatus.draft):
+        event.status = EventStatus.active
     db.add(event)
 
     try:
@@ -95,6 +100,16 @@ async def update_event_service(
     update_data = event_data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(event, key, value)
+
+    # Keep status in sync with the stage so "completed" events read as completed
+    # even when the organizer advances the stage manually.
+    from app.models.event import EventStage
+
+    if event.stage == EventStage.completed:
+        event.status = EventStatus.completed
+    elif event.status == EventStatus.completed and event.stage != EventStage.completed:
+        # Re-opened a completed event by moving the stage back.
+        event.status = EventStatus.active
 
     await db.commit()
     await db.refresh(event, attribute_names=["rounds"])
