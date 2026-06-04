@@ -181,6 +181,9 @@ error2.md
 charts.md
 ppt.md
 theme.md
+ai_error.md
+challenges.md
+contribution.md
 
 hackathon_multiround_demo.md
 hackathon_oneround_demo.md
@@ -190,6 +193,8 @@ participants_2p.csv
 participants.csv
 
 backend/alembic/_archive_broken_versions
+Event_Pages_SS.zip
+demo
 
 
 frontend_new/package-lock.json
