@@ -1080,14 +1080,30 @@ async def _materialize_rounds_judges_rubric(
     # ── Rounds ──
     rounds_cfg = config.get("rounds") or []
     created: List[Tuple[RoundModel, dict]] = []
+    # Stamp rounds with strictly increasing created_at values. Postgres
+    # func.now() returns the *transaction* start time, so every round added in
+    # this single-commit batch would otherwise share an identical created_at —
+    # and any `ORDER BY created_at` (the judge dashboard, the pipeline's per-round
+    # step order) would then return them jumbled and inconsistently per query.
+    base_now = datetime.now(timezone.utc)
     if rounds_cfg:
         for idx, r in enumerate(rounds_cfg):
             rname = r.get("round_name") or r.get("name") or f"Round {idx + 1}"
-            rnd = RoundModel(event_id=event.id, name=str(rname)[:120], status=RoundStatus.upcoming)
+            rnd = RoundModel(
+                event_id=event.id,
+                name=str(rname)[:120],
+                status=RoundStatus.upcoming,
+                created_at=base_now + timedelta(seconds=idx),
+            )
             db.add(rnd)
             created.append((rnd, r))
     else:
-        rnd = RoundModel(event_id=event.id, name="Round 1", status=RoundStatus.upcoming)
+        rnd = RoundModel(
+            event_id=event.id,
+            name="Round 1",
+            status=RoundStatus.upcoming,
+            created_at=base_now,
+        )
         db.add(rnd)
         created.append((rnd, {}))
     await db.commit()

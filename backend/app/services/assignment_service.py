@@ -269,10 +269,16 @@ async def propose_judge_assignment(
     `judges_per_team` is floored at 3 regardless of what the caller passes.
     """
     judges_per_team = max(3, judges_per_team)
-    # Auto-detect first round for the event when caller doesn't specify one
+    # Auto-detect the first round for the event when the caller doesn't specify
+    # one. Order by created_at so this is deterministic (the panel is shared
+    # across all rounds at grading time, but the stored round_id should still be
+    # stable rather than whatever the DB happens to return first).
     if not round_id:
         rounds_result = await db.execute(
-            select(Round).where(Round.event_id == event_id).limit(1)
+            select(Round)
+            .where(Round.event_id == event_id)
+            .order_by(Round.created_at)
+            .limit(1)
         )
         round_obj = rounds_result.scalars().first()
         if not round_obj:
