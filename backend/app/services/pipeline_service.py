@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.approval import ApprovalRequest, ApprovalStatus, RequestType
-from app.models.event import Event, EventStage, EventStatus, Round
+from app.models.event import Event, EventStage, EventStatus, Round, RoundStatus
 from app.models.participant import Participant
 from app.models.judge import Judge, JudgeAssignment
 from app.models.pipeline import EventPipeline
@@ -252,7 +252,7 @@ def _next_step_id(steps: list[dict], current: str) -> str | None:
 
 async def _ordered_rounds(db: AsyncSession, event_id) -> list:
     res = await db.execute(
-        select(Round).where(Round.event_id == event_id).order_by(Round.created_at)
+        select(Round).where(Round.event_id == event_id).order_by(Round.created_at, Round.id)
     )
     return list(res.scalars().all())
 
@@ -472,6 +472,54 @@ async def get_state(db: AsyncSession, event_id) -> dict:
     }
 
 
+async def sync_round_statuses(db: AsyncSession, event_id) -> bool:
+    """Derive each round's status (upcoming/active/completed) from the pipeline
+    cursor and persist any changes.
+
+    Rounds are created 'upcoming' and nothing else ever updates the column, so
+    without this every round — done, current, and future — displays as
+    'upcoming'. We map the pipeline's per-round steps
+    (round:<id>:submission|evaluation|advancement) onto the round:
+      - all three steps done           → completed
+      - cursor is within the round     → active
+      - cursor hasn't reached it yet   → upcoming
+    Returns True if any row changed. Best-effort and idempotent.
+    """
+    state = await get_state(db, event_id)
+    steps = state.get("steps", [])
+    if not steps:
+        return False
+
+    statuses_by_round: dict[str, set] = {}
+    for s in steps:
+        rid = s.get("round_id")
+        if rid:
+            statuses_by_round.setdefault(rid, set()).add(s.get("status"))
+
+    if not statuses_by_round:
+        return False
+
+    rounds = await _ordered_rounds(db, event_id)
+    changed = False
+    for rnd in rounds:
+        statuses = statuses_by_round.get(str(rnd.id))
+        if not statuses:
+            continue
+        if statuses == {"done"}:
+            target = RoundStatus.completed
+        elif "active" in statuses or "done" in statuses:
+            target = RoundStatus.active
+        else:
+            target = RoundStatus.upcoming
+        if rnd.status != target:
+            rnd.status = target
+            changed = True
+
+    if changed:
+        await db.commit()
+    return changed
+
+
 async def is_round_submission_closed(db: AsyncSession, event_id, round_id) -> bool:
     """True once the pipeline has advanced past this round's submission step."""
     try:
@@ -523,6 +571,23 @@ async def autopropose(db: AsyncSession, event_id) -> None:
         "round_id": current_step_obj.get("round_id"),
         "cutoff_score": 0.0,
     }
+
+    # Winner announcement is irreversible (it emails winners + distributes
+    # certificates), so the approval carries the proposed winners for the
+    # organizer to review/edit before approving. The executor announces exactly
+    # this reviewed list.
+    is_winner_step = current == "winner_announcement"
+    if is_winner_step:
+        try:
+            from app.services.winner_service import propose_winners
+            proposal = await propose_winners(db, event_id, top_n=3)
+            payload["winners"] = [
+                w for w in proposal.get("winners", [])
+                if w.get("team_id") not in eliminated
+            ]
+        except Exception as exc:
+            print(f"[pipeline_service] winner proposal for approval failed: {exc}")
+
     await create_approval_request(
         db=db,
         event_id=str(event_id),
@@ -534,8 +599,11 @@ async def autopropose(db: AsyncSession, event_id) -> None:
         db=db,
         event_id=str(event_id),
         user_id=str(event.organizer_id),
-        title="Pipeline: action ready",
+        title=("Approve winner announcement" if is_winner_step else "Pipeline: action ready"),
         message=(
+            "Winners are proposed and ready. Review them in Approvals and approve "
+            "to announce winners and send emails."
+            if is_winner_step else
             f"'{current_step_obj['label']}' is complete. "
             f"Approve in Approvals to advance the event."
         ),
@@ -560,6 +628,22 @@ async def advance_pipeline(db: AsyncSession, event_id, cutoff_score: float = 0.0
             "current_step": current,
             "next_step": next_step,
             "message": "Pipeline is already at its final step.",
+        }
+
+    # Winner announcement emails winners and distributes certificates — an
+    # irreversible action that must always be explicitly approved, never fired
+    # by a direct advance. Route it to the approval queue instead of executing.
+    if current == "winner_announcement":
+        await autopropose(db, event_id)
+        return {
+            "advanced": False,
+            "requires_approval": True,
+            "current_step": current,
+            "next_step": next_step,
+            "message": (
+                "Winner announcement requires approval. Review the proposed "
+                "winners in Approvals and approve to announce them and send emails."
+            ),
         }
 
     rounds = await _ordered_rounds(db, event_id)
@@ -662,12 +746,19 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
         except Exception as exc:
             print(f"[pipeline_service] round-result emails failed: {exc}")
 
-    # Winner announcement: pick top qualifying teams and run the winner flow.
+    # Winner announcement: announce the winners the organizer reviewed when they
+    # approved this transition. We only reach here via an approved approval (the
+    # direct-advance path is blocked for this step), so reaching this code is the
+    # verification gate. Fall back to a fresh proposal only if the payload didn't
+    # carry one (e.g. legacy approvals created before this field existed).
     if current_step == "winner_announcement":
         try:
             from app.services.winner_service import propose_winners, finalize_winners
-            proposal = await propose_winners(db, event_id, top_n=3)
-            winners = [w for w in proposal.get("winners", []) if w["team_id"] not in eliminated]
+            winners = payload.get("winners")
+            if not winners:
+                proposal = await propose_winners(db, event_id, top_n=3)
+                winners = proposal.get("winners", [])
+            winners = [w for w in winners if w.get("team_id") not in eliminated]
             if winners:
                 await finalize_winners(db, event_id, winners, requested_by=str(event.organizer_id))
         except Exception as exc:
@@ -690,6 +781,13 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
         event.status = EventStatus.completed
 
     await db.commit()
+
+    # Keep each round's status column in step with the new cursor position so
+    # the judge/organizer UIs show done/active/upcoming correctly.
+    try:
+        await sync_round_statuses(db, event_id)
+    except Exception as exc:
+        print(f"[pipeline_service] round status sync failed: {exc}")
 
     # Chain: immediately propose the next transition if its condition is already met.
     try:

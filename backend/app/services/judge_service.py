@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -74,23 +76,36 @@ async def get_judge_assignments_detail(
     judge_id: UUID,
 ) -> list[JudgeAssignmentDetail]:
     """
-    Return all team assignments for a judge in an event, enriched with
-    round/team names and whether a gradeable submission exists.
+    Return this judge's gradeable rows for an event — one per (assigned team,
+    round), enriched with round/team names and the round's own submission.
+
+    A judge assignment is treated as *panel membership*: the judge grades the
+    same teams in every round. The auto-assigner only ever stores assignments
+    under a single (arbitrary) round, so keying the dashboard off the stored
+    round_id meant a judge in a multi-round event could only see — and only
+    grade — that one round's submission, showing the wrong round's data. We
+    instead derive the panel teams from the assignments and fan them out across
+    every round of the event, pairing each with that round's submission.
     """
-    # Fetch rounds for this event
+    # Fetch rounds for this event, oldest first so the dashboard lists them in
+    # a stable, chronological order.
     rounds_result = await db.execute(
-        select(Round).where(Round.event_id == event_id)
+        select(Round)
+        .where(Round.event_id == event_id)
+        .order_by(Round.created_at, Round.id)
     )
-    rounds = {r.id: r for r in rounds_result.scalars().all()}
+    rounds = rounds_result.scalars().all()
 
     if not rounds:
         return []
 
-    # Fetch this judge's assignments for any of those rounds
+    # The judge's assignments determine which teams form their panel. The
+    # round_id stored on each row is intentionally ignored here — the panel
+    # applies to every round (see docstring).
     assignments_result = await db.execute(
         select(JudgeAssignment).where(
             JudgeAssignment.judge_id == judge_id,
-            JudgeAssignment.round_id.in_(list(rounds.keys()))
+            JudgeAssignment.round_id.in_([r.id for r in rounds]),
         )
     )
     assignments = assignments_result.scalars().all()
@@ -98,27 +113,30 @@ async def get_judge_assignments_detail(
     if not assignments:
         return []
 
-    # Batch-fetch teams
-    team_ids = {a.team_id for a in assignments}
+    panel_team_ids = {a.team_id for a in assignments}
+    # Reuse the real assignment row id when one exists for a (team, round) pair;
+    # otherwise synthesize a deterministic id (the frontend only uses it as a
+    # list key, but the schema requires a UUID).
+    real_assignment_id = {(a.team_id, a.round_id): a.id for a in assignments}
+
+    # Batch-fetch the panel's teams.
     teams_result = await db.execute(
-        select(Team).where(Team.id.in_(list(team_ids)))
+        select(Team).where(Team.id.in_(list(panel_team_ids)))
     )
     teams = {t.id: t for t in teams_result.scalars().all()}
 
-    # Batch-fetch submissions for (team, round) pairs in this event
-    round_ids = {a.round_id for a in assignments}
+    # Batch-fetch every submission for (panel team, any round) in this event.
     subs_result = await db.execute(
         select(Submission).where(
-            Submission.team_id.in_(list(team_ids)),
-            Submission.round_id.in_(list(round_ids)),
+            Submission.team_id.in_(list(panel_team_ids)),
+            Submission.round_id.in_([r.id for r in rounds]),
         )
     )
-    # Index by (team_id, round_id) → submission
     submissions: dict[tuple, Submission] = {}
     for s in subs_result.scalars().all():
         submissions[(s.team_id, s.round_id)] = s
 
-    # Fetch evaluations by this judge for those submissions
+    # Fetch evaluations by this judge for those submissions.
     sub_ids = {s.id for s in submissions.values()}
     evaluated_sub_ids: set = set()
     if sub_ids:
@@ -131,22 +149,26 @@ async def get_judge_assignments_detail(
         evaluated_sub_ids = {row[0] for row in evals_result.all()}
 
     details: list[JudgeAssignmentDetail] = []
-    for a in assignments:
-        rnd = rounds.get(a.round_id)
-        team = teams.get(a.team_id)
-        if not rnd or not team:
-            continue
-        sub = submissions.get((a.team_id, a.round_id))
-        details.append(JudgeAssignmentDetail(
-            assignment_id=a.id,
-            round_id=a.round_id,
-            round_name=rnd.name,
-            round_status=rnd.status.value if hasattr(rnd.status, "value") else str(rnd.status),
-            team_id=a.team_id,
-            team_name=team.name,
-            submission_id=sub.id if sub else None,
-            submission_status=sub.status.value if sub and hasattr(sub.status, "value") else (str(sub.status) if sub else None),
-            already_evaluated=sub.id in evaluated_sub_ids if sub else False,
-        ))
+    for rnd in rounds:
+        round_status = rnd.status.value if hasattr(rnd.status, "value") else str(rnd.status)
+        for team_id in panel_team_ids:
+            team = teams.get(team_id)
+            if not team:
+                continue
+            sub = submissions.get((team_id, rnd.id))
+            assignment_id = real_assignment_id.get((team_id, rnd.id)) or uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{judge_id}:{team_id}:{rnd.id}"
+            )
+            details.append(JudgeAssignmentDetail(
+                assignment_id=assignment_id,
+                round_id=rnd.id,
+                round_name=rnd.name,
+                round_status=round_status,
+                team_id=team_id,
+                team_name=team.name,
+                submission_id=sub.id if sub else None,
+                submission_status=sub.status.value if sub and hasattr(sub.status, "value") else (str(sub.status) if sub else None),
+                already_evaluated=sub.id in evaluated_sub_ids if sub else False,
+            ))
 
     return details

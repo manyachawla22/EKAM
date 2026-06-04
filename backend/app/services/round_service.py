@@ -40,10 +40,20 @@ async def list_rounds_service(
     db: AsyncSession,
     event_id,
 ) -> list[Round]:
+    # Self-heal round statuses from the pipeline cursor before returning. Rounds
+    # are created 'upcoming' and only the pipeline knows real progress, so
+    # without this every round renders as 'upcoming'. Lazy import avoids a
+    # circular import at module load.
+    try:
+        from app.services.pipeline_service import sync_round_statuses
+        await sync_round_statuses(db, event_id)
+    except Exception as exc:
+        print(f"[round_service] round status sync failed: {exc}")
+
     result = await db.execute(
         select(Round)
         .where(Round.event_id == event_id)
-        .order_by(Round.created_at)
+        .order_by(Round.created_at, Round.id)
     )
     return list(result.scalars().all())
 

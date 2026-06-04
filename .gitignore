@@ -166,31 +166,6 @@ reports/
 !.env.example
 !*.example.json
 
-#extras
-EMAIL_FIX.md
-email.md
-errors.md
-final_work.md
-IMPLEMENTATION.md
-project_overview.md
-current_dashboard.md
-TO-DO.md
-report.md
-report2.md
-error2.md
-charts.md
-ppt.md
-theme.md
-ai_error.md
-challenges.md
-contribution.md
-
-hackathon_multiround_demo.md
-hackathon_oneround_demo.md
-judges_3j.csv
-judges.csv
-participants_2p.csv
-participants.csv
 
 backend/alembic/_archive_broken_versions
 Event_Pages_SS.zip

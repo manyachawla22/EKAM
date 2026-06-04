@@ -208,6 +208,36 @@ export default function ApprovalEditor({ eventId, approval, teams, judges, parti
     );
   }
 
+  // ── stage_transition: winner announcement (review winners before sending) ──
+  if (type === "stage_transition" && currentStep === "winner_announcement") {
+    const winners = (payload.winners as Array<{ rank?: number; team_id: string; team_name?: string; score?: number }>) || [];
+    const medals: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.6rem" }}>
+        <p style={{ margin: 0, fontSize: "0.8rem", color: "rgba(255,255,255,0.7)" }}>
+          Approving will <strong style={{ color: "#fff" }}>announce these winners</strong> and email each
+          member their winner certificate. This can&apos;t be undone.
+        </p>
+        {winners.length > 0 ? (
+          winners
+            .slice()
+            .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99))
+            .map((w) => (
+              <div key={w.team_id} style={rowBox}>
+                <span style={{ fontSize: "1rem" }}>{medals[w.rank ?? 0] || `#${w.rank ?? "—"}`}</span>
+                <span style={{ flex: 1, fontSize: "0.8rem", color: "#fff" }}>{w.team_name || teamName(w.team_id)}</span>
+                <span style={{ fontSize: "0.8rem", color: "#e8503a", fontWeight: 600 }}>
+                  {w.score != null ? Number(w.score).toFixed(1) : "—"}
+                </span>
+              </div>
+            ))
+        ) : (
+          <span style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.3)" }}>No winners proposed.</span>
+        )}
+      </div>
+    );
+  }
+
   // ── stage_transition / progression: non-advancement (named summary) ──
   if (type === "stage_transition" || type === "progression") {
     const nextStep = (payload.next_step as string) || (payload.target_stage as string) || "";

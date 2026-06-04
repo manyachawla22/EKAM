@@ -264,62 +264,78 @@ async def judge_dashboard_service(
     pending_evaluations = []
     completed_evaluations = []
 
-    # Collect round_ids for this event to scope submissions
-    round_ids_res = await db.execute(
-        select(Round.id).where(Round.event_id == event_id)
+    # A judge assignment is panel membership: the judge grades their teams in
+    # EVERY round, not just the (arbitrary) round the assignment was stored
+    # under. So derive the panel teams, then fan them out across all rounds and
+    # pair each with that round's own submission — mirroring
+    # get_judge_assignments_detail so the summary cards match the pipeline.
+    panel_team_ids = {a.team_id for a in assignments}
+
+    rounds_res = await db.execute(
+        select(Round).where(Round.event_id == event_id).order_by(Round.created_at, Round.id)
     )
-    round_ids = [r[0] for r in round_ids_res.all()]
+    rounds = rounds_res.scalars().all()
 
-    for assign in assignments:
-        res_team = await db.execute(select(Team).where(Team.id == assign.team_id))
-        team = res_team.scalars().first()
-        if not team:
-            continue
+    teams = {}
+    submissions = {}
+    if panel_team_ids and rounds:
+        round_ids = [r.id for r in rounds]
 
-        # Latest submission from this team in this event (via round_ids)
-        submission = None
-        if round_ids:
-            res_sub = await db.execute(
-                select(Submission)
-                .where(
-                    Submission.team_id == assign.team_id,
-                    Submission.round_id.in_(round_ids),
-                )
-                .order_by(Submission.submitted_at.desc())
-                .limit(1)
+        teams_res = await db.execute(
+            select(Team).where(Team.id.in_(list(panel_team_ids)))
+        )
+        teams = {t.id: t for t in teams_res.scalars().all()}
+
+        subs_res = await db.execute(
+            select(Submission).where(
+                Submission.team_id.in_(list(panel_team_ids)),
+                Submission.round_id.in_(round_ids),
             )
-            submission = res_sub.scalars().first()
+        )
+        for s in subs_res.scalars().all():
+            submissions[(s.team_id, s.round_id)] = s
 
-        team_entry = {
-            "team_id": str(team.id),
-            "team_name": team.name,
-            "theme_id": str(team.theme_id) if team.theme_id else None,
-            "submission_id": str(submission.id) if submission else None,
-        }
-        assigned_teams.append(team_entry)
+    for rnd in rounds:
+        for team_id in panel_team_ids:
+            team = teams.get(team_id)
+            if not team:
+                continue
 
-        if submission:
-            res_eval = await db.execute(
-                select(Evaluation).where(
-                    Evaluation.submission_id == submission.id,
-                    Evaluation.judge_id == judge_id,
+            submission = submissions.get((team_id, rnd.id))
+
+            assigned_teams.append({
+                "team_id": str(team.id),
+                "team_name": team.name,
+                "round_id": str(rnd.id),
+                "round_name": rnd.name,
+                "theme_id": str(team.theme_id) if team.theme_id else None,
+                "submission_id": str(submission.id) if submission else None,
+            })
+
+            if submission:
+                res_eval = await db.execute(
+                    select(Evaluation).where(
+                        Evaluation.submission_id == submission.id,
+                        Evaluation.judge_id == judge_id,
+                    )
                 )
-            )
-            eval_record = res_eval.scalars().first()
+                eval_record = res_eval.scalars().first()
 
-            if eval_record:
-                completed_evaluations.append({
-                    "submission_id": str(submission.id),
-                    "team_name": team.name,
-                    "score": eval_record.total_score,  # Evaluation uses total_score
-                    "evaluated_at": eval_record.evaluated_at,
-                })
-            else:
-                pending_evaluations.append({
-                    "submission_id": str(submission.id),
-                    "team_name": team.name,
-                    "team_id": str(team.id),
-                })
+                if eval_record:
+                    completed_evaluations.append({
+                        "submission_id": str(submission.id),
+                        "team_name": team.name,
+                        "round_name": rnd.name,
+                        "score": eval_record.total_score,  # Evaluation uses total_score
+                        "evaluated_at": eval_record.evaluated_at,
+                    })
+                else:
+                    pending_evaluations.append({
+                        "submission_id": str(submission.id),
+                        "team_name": team.name,
+                        "round_name": rnd.name,
+                        "team_id": str(team.id),
+                    })
 
     # Unread notifications for this judge
     res_notifs = await db.execute(
