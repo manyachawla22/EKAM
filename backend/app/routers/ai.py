@@ -3,12 +3,12 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import groq as _groq
 from groq import Groq
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,9 +28,47 @@ from app.models.event import (
 )
 from app.models.judge import Judge as JudgeModel
 from app.models.rubric import RubricCriterion
+from app.models.theme import Theme as ThemeModel
 from app.services.csv_service import parse_participant_csv, parse_judge_csv
 
 router = APIRouter()
+
+# India Standard Time is a fixed +05:30 offset (no DST), so we model it as a
+# constant offset rather than zoneinfo("Asia/Kolkata") — the latter needs the
+# IANA tz database, which isn't present on Windows without the `tzdata` package.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+# Every /ai/* endpoint that creates or mutates event data is organizer/admin
+# only — the rest of EKAM is behind event-scoped RBAC and this router was the
+# one open door. The frontend already sends the organizer's bearer token here.
+_organizer_only = Depends(require_actor_type(["organizer", "admin"]))
+
+# Per-event async locks serialize read-modify-write on the JSON files so two
+# concurrent requests for the same event can't clobber each other's changes.
+# Different events still proceed in parallel.
+_event_locks: Dict[str, asyncio.Lock] = {}
+_event_locks_guard = asyncio.Lock()
+_index_lock = asyncio.Lock()
+
+
+async def _event_lock(event_id: str) -> asyncio.Lock:
+    async with _event_locks_guard:
+        lock = _event_locks.get(event_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _event_locks[event_id] = lock
+        return lock
+
+
+def _is_uuid(value: Any) -> bool:
+    """True only for a well-formed UUID string. Used to reject event_ids that
+    could escape the data directory via path traversal (e.g. '..')."""
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 
 _MODELS = ["llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct"]
 _FALLBACK_MODELS = ["llama-3.1-8b-instant", "llama3-8b-8192"]
@@ -45,77 +83,52 @@ def _next_model() -> str:
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now(IST).strftime("%Y-%m-%d")
 
 
 # ── Section system prompts ─────────────────────────────────────────────────────
 
 def _sec1_system() -> str:
     today = _today()
-    return f"""You are extracting structured event configuration from an organizer's event description.
+    return f"""Extract core event details, timeline, and participant structure from the organizer's message.
+Return ONLY valid JSON — no markdown, no prose.
+Include ONLY fields you can confidently extract. Omit unknown fields entirely.
+Extract team formation constraints if mentioned.
+Allowed team matching constraints:
+- gender_diversity
+- avoid_same_college
+- balance_experience
+- keep_friends_together
+- separate_participants
 
-Return ONLY valid JSON.
-No markdown.
-No prose.
-No placeholders.
-No invented values.
+DATE MATH (today = {today}, timezone = Asia/Kolkata +05:30):
+  "opens now" / "today" → {today}T00:00:00+05:30
+  "in N days" → add N days to {today}
+  "March 15 9 AM IST" → 2026-03-15T09:00:00+05:30
 
-Core rules:
-- Extract ONLY what is explicitly stated or can be directly inferred with high confidence.
-- If a value is missing, OMIT it entirely.
-- Do NOT invent judges, prizes, dates, venue, contact details, tracks, or constraints.
-- Event name/title must NOT be extracted here. It is collected separately.
-- Team-matching constraints must use ONLY these supported types:
-  - gender_diversity
-  - avoid_same_college
-  - balance_experience
-  - required_skill
-- Do NOT output unsupported constraint types.
+Extract the event name/title ONLY if the organizer explicitly states it (e.g. "called X", "named X", "X 2026 Hackathon"). If no clear name is given, omit it — it will be asked separately.
 
-DATE RULES (today = {today}, timezone = Asia/Kolkata +05:30):
-- "today" / "now" → {today}T00:00:00+05:30
-- "in N days" → compute relative to {today}
-- If the user gives no date, omit the date field.
+THEMES/TRACKS: If the message describes one or more themes, tracks, or problem statements that teams compete under, extract them into "tracks". Capture each theme's name, description, and required_skills when given (e.g. "Theme: Edge AI Utilities — required skills Python, ML — build a small reliable edge ML utility").
 
-OUTPUT SCHEMA (include only fields you confidently know):
+OUTPUT SCHEMA (include only present fields):
 {{
   "core": {{
-    "theme": "short phrase",
+    "name": "official event name, only if explicitly stated",
+    "theme": "2-4 keyword phrase only",
     "event_type": "hackathon|case_competition|quiz|ideathon|coding_contest",
     "mode": "online|offline|hybrid",
-    "description": "short factual summary",
+    "description": "1-2 sentence auto-generated summary",
     "tagline": "",
-    "venue": {{
-      "name": "",
-      "city": "",
-      "state": "",
-      "country": ""
-    }},
-    "contact": {{
-      "email": "",
-      "phone": ""
-    }},
     "tracks": [
-      {{
-        "track_id": "t1",
-        "name": "AI/ML",
-        "description": ""
-      }}
-    ]
+      {{"track_id":"t1","name":"Edge AI Utilities","description":"Build a small reliable edge ML utility","required_skills":["Python","ML"]}}
+    ],
+    "venue": {{"name":"","city":"","state":"","country":""}},
+    "contact": {{"email":"","phone":""}}
   }},
   "timeline": {{
     "timezone": "Asia/Kolkata",
-    "registration": {{
-      "opens_at": "ISO8601+05:30",
-      "closes_at": "ISO8601+05:30"
-    }},
-    "key_dates": [
-      {{
-        "name": "Event Start",
-        "date": "ISO8601+05:30",
-        "description": ""
-      }}
-    ]
+    "registration": {{"opens_at":"ISO8601+05:30","closes_at":"ISO8601+05:30"}},
+    "key_dates": [{{"name":"Event Start","date":"ISO8601+05:30","description":""}}]
   }},
   "participants": {{
     "model": "individual|teams",
@@ -133,27 +146,15 @@ OUTPUT SCHEMA (include only fields you confidently know):
         }},
         {{
           "type": "balance_experience"
-        }},
-        {{
-          "type": "required_skill",
-          "skill": "python",
-          "min_count": 1
         }}
       ]
     }},
-    "team": {{
-      "min_size": 4,
-      "max_size": 4
-    }},
-    "capacity": {{
-      "max_teams": 50,
-      "max_participants": 200
-    }},
-    "eligibility": {{
-      "open_to": ["students"]
-    }}
+    "team": {{"min_size":4,"max_size":4}},
+    "capacity": {{"max_teams":50,"max_participants":200}},
+    "eligibility": {{"open_to":["students"]}}
   }}
 }}"""
+
 
 def _sec2_system() -> str:
     return """Extract rounds and judging panel from the organizer's message.
@@ -235,194 +236,37 @@ OUTPUT SCHEMA:
 
 def _followup_system() -> str:
     today = _today()
-    return f"""You extract ONE specific missing event field from a short organizer reply.
-
-Return ONLY valid JSON.
-No markdown.
-No prose.
-No placeholders.
-No invented values.
-
+    return f"""You extract a specific event field from an organizer's short reply.
+Return ONLY valid JSON — no markdown, no prose.
 Today = {today}, timezone = Asia/Kolkata (+05:30).
 
-General rules:
-- You will receive:
-  - Field: <field_name>
-  - Question asked
-  - Current config
-  - User reply
-- Extract ONLY the requested field.
-- Wrap it in the correct top-level structure.
-- If the reply does not actually answer the field, return {{}}.
-- If the user says skip / none / not sure, return {{}}.
-- Do NOT invent dates, judges, prizes, venue, or contact info.
+DATE MATH: "in N days" = {today} + N days | "today/now" = {today}T00:00:00+05:30
 
-DATE RULES:
-- "today" / "now" → {today}T00:00:00+05:30
-- "in N days" → compute relative to {today}
-- If ambiguous, omit.
+The context will say "Field: <key>" — extract ONLY that field and wrap it in the correct top-level key.
 
-SUPPORTED FIELD OUTPUTS:
+EXAMPLES:
+You will be told which field is being answered. Extract ONLY that field and return
+the matching JSON structure. For example:
 
-Field: name
-{{
-  "core": {{
-    "name": "HackFest 2026"
-  }}
-}}
+Field: venue → reply "IIT Delhi, Delhi" → {{"core":{{"venue":{{"name":"IIT Delhi","city":"Delhi","state":"Delhi","country":"India"}}}}}}
+Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"email":"abc@gmail.com","phone":"9876543210"}}}}}}
+Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
+Field: teams → reply "50 teams 4 each, up to 200 participants" → {{"participants":{{"capacity":{{"max_teams":50,"max_participants":200}},"team":{{"min_size":4,"max_size":4}}}}}}
+  (Always capture max_participants when a total participant/registration cap is given, e.g. "max 2 participants" → capacity.max_participants = 2. If only team count and size are given, you may compute max_participants = max_teams × max_size.)
+Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
+Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
+Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
+{{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
+Field: tracks → capture each theme's name, description, AND required_skills when given.
+  reply "Edge AI Utilities — Python, ML — build a small reliable edge ML utility" → {{"core":{{"tracks":[{{"track_id":"t1","name":"Edge AI Utilities","description":"build a small reliable edge ML utility","required_skills":["Python","ML"]}}]}}}}
+  reply "AI, Web3, Climate Tech" → {{"core":{{"tracks":[{{"track_id":"t1","name":"AI","description":"","required_skills":[]}},{{"track_id":"t2","name":"Web3","description":"","required_skills":[]}},{{"track_id":"t3","name":"Climate Tech","description":"","required_skills":[]}}]}}}}
+Field: team_constraints → reply "at least 1 girl per team, members from different colleges" → {{"participants":{{"team_formation_constraints":"at least 1 girl per team, members from different colleges"}}}}
 
-Field: theme
-{{
-  "core": {{
-    "theme": "AI for Sustainability"
-  }}
-}}
-
-Field: mode
-{{
-  "core": {{
-    "mode": "online"
-  }}
-}}
-
-Field: venue
-{{
-  "core": {{
-    "venue": {{
-      "name": "IIT Delhi",
-      "city": "Delhi",
-      "state": "Delhi",
-      "country": "India"
-    }}
-  }}
-}}
-
-Field: contact
-{{
-  "core": {{
-    "contact": {{
-      "email": "abc@gmail.com",
-      "phone": "9876543210"
-    }}
-  }}
-}}
-
-Field: registration
-{{
-  "timeline": {{
-    "registration": {{
-      "opens_at": "{today}T00:00:00+05:30",
-      "closes_at": "{today}T00:00:00+05:30"
-    }}
-  }}
-}}
-
-Field: tracks
-{{
-  "core": {{
-    "tracks": [
-      {{"track_id":"t1","name":"AI","description":""}},
-      {{"track_id":"t2","name":"Web3","description":""}}
-    ]
-  }}
-}}
-
-Field: teams
-{{
-  "participants": {{
-    "capacity": {{
-      "max_teams": 50,
-      "max_participants": 200
-    }},
-    "team": {{
-      "min_size": 4,
-      "max_size": 4
-    }},
-    "model": "teams",
-    "individual_registration_allowed": false
-  }}
-}}
-
-Field: team_constraints
-Use ONLY these supported constraint types:
-- gender_diversity
-- avoid_same_college
-- balance_experience
-- required_skill
-
-Example output:
-{{
-  "participants": {{
-    "team_matching": {{
-      "enabled": true,
-      "constraints": [
-        {{"type":"gender_diversity","min_per_team":1}},
-        {{"type":"avoid_same_college"}},
-        {{"type":"required_skill","skill":"python","min_count":1}}
-      ]
-    }},
-    "team_formation_constraints": "at least 1 girl per team, different colleges, one python person"
-  }}
-}}
-
-Field: rounds
-{{
-  "rounds": [
-    {{
-      "round_id": "round_1",
-      "round_number": 1,
-      "round_name": "Idea Submission",
-      "type": "online_submission",
-      "deliverables": [
-        {{"name":"Idea Deck","type":"file","file_types":["pdf"],"required":true}}
-      ],
-      "scoring": {{
-        "criteria": [
-          {{"criterion_id":"c1","name":"Innovation","weight":50,"max_score":50,"min_score":0}}
-        ]
-      }},
-      "advancement": {{"method":"top_n","value":10,"qualifies_to_round_id":"round_2"}},
-      "is_final_round": false
-    }}
-  ]
-}}
-
-Field: judges
-CRITICAL:
-- Only output judges if the reply includes REAL human names.
-- If the user gives only a count like "3 judges", return {{}}.
-Example:
-{{
-  "judging_panel": {{
-    "judges": [
-      {{
-        "judge_id":"judge_1",
-        "name":"Aarav Mehta",
-        "company":"Google",
-        "expertise":["AI"]
-      }}
-    ]
-  }}
-}}
-
-Field: prizes
-CRITICAL:
-- Only output prizes if the reply explicitly gives prize information.
-- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}.
-- Always wrap inside "prizes".
-
-Example:
-{{
-  "prizes": {{
-    "currency":"INR",
-    "total_pool":"₹10,000",
-    "distribution":[
-      {{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},
-      {{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}
-    ],
-    "special_awards":[]
-  }}
-}}"""
+PRIZE RULES:
+- Convert shorthand amounts: "10k"→"₹10,000", "1L"/"1,00,000"→"₹1,00,000", "5000"→"₹5,000"
+- total_pool = sum of ALL prizes given. If only distribution given, sum them.
+- Always wrap inside {{"prizes": {{...}}}} — never return prizes fields at the top level.
+- If the user says no prizes / skip, return {{"prizes": {{"total_pool": "none"}}}}"""
 
 
 # ── Skip detection ─────────────────────────────────────────────────────────────
@@ -433,38 +277,13 @@ _SKIP_PHRASES = {
     "dont know", "don't know", "idk",
 }
 
+# Core identity fields that cannot be skipped — the event is meaningless without
+# them, so a "skip" reply is ignored and the question is asked again.
+_NON_SKIPPABLE = {"name", "theme"}
+
 
 def _is_skip(text: str) -> bool:
     return text.lower().strip().rstrip(".!,") in _SKIP_PHRASES
-
-
-def _question_to_field_key(question: str) -> Optional[str]:
-    q = question.lower()
-    if "name of the event" in q:
-        return "name"
-    if "theme" in q:
-        return "theme"
-    if "online" in q or "offline" in q or "hybrid" in q:
-        return "mode"
-    if "venue" in q:
-        return "venue"
-    if "contact" in q:
-        return "contact"
-    if "registration" in q:
-        return "registration"
-    if "team formation constraint" in q or "constraint" in q:
-        return "team_constraints"
-    if "track" in q:
-        return "tracks"
-    if "team" in q:
-        return "teams"
-    if "round" in q:
-        return "rounds"
-    if "judge" in q:
-        return "judges"
-    if "prize" in q:
-        return "prizes"
-    return None
 
 
 # ── What's still needed ────────────────────────────────────────────────────────
@@ -521,7 +340,7 @@ def _has_real_judges(cfg: dict) -> bool:
     return False
 
 
-def _next_question(cfg: dict) -> Tuple[str, bool]:
+def _next_question(cfg: dict) -> Tuple[str, Optional[str], bool]:
     core = cfg.get("core", {})
     tl = cfg.get("timeline", {})
     reg = tl.get("registration", {})
@@ -533,7 +352,7 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
         (not core.get("theme"),
          "theme", "What is the theme or focus area of the event?"),
         (not core.get("tracks"),
-         "tracks", "What are the tracks or themes participants can compete under? (e.g. AI/ML, Web3, Climate Tech — skip if not applicable)"),
+         "tracks", "What themes or tracks can teams compete under? For each, share its name, a short description, and the required skills (e.g. 'Edge AI Utilities — Python, ML — build a small reliable edge ML utility' — skip if not applicable)."),
         (not core.get("mode"),
          "mode", "Will this be online, offline, or hybrid?"),
         (core.get("mode") in ("offline", "hybrid") and not core.get("venue", {}).get("city"),
@@ -542,9 +361,10 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
          "contact", "What is the contact email or phone for the event?"),
         (not reg.get("opens_at") or not reg.get("closes_at"),
          "registration", "When does registration open and close?"),
-        (not cfg.get("participants", {}).get("team", {}).get("min_size")
-         and not cfg.get("participants", {}).get("capacity", {}).get("max_teams"),
-         "teams", "How many teams can participate, and what is the team size?"),
+        ((not cfg.get("participants", {}).get("team", {}).get("min_size"))
+         or (not cfg.get("participants", {}).get("capacity", {}).get("max_teams")
+             and not cfg.get("participants", {}).get("capacity", {}).get("max_participants")),
+         "teams", "What is the team size, and how many teams or participants can take part in total?"),
         (not cfg.get("participants", {}).get("team_formation_constraints"),
          "team_constraints", "Any team formation constraints? (e.g. 'at least 1 girl per team', 'members from different colleges' — skip if none)"),
         (not cfg.get("rounds"),
@@ -557,9 +377,9 @@ def _next_question(cfg: dict) -> Tuple[str, bool]:
 
     for condition, field_key, question in checks:
         if condition and field_key not in skipped:
-            return question, False
+            return question, field_key, False
 
-    return "All required fields are collected.", True
+    return "All required fields are collected.", None, True
 
 
 # ── File helpers ───────────────────────────────────────────────────────────────
@@ -576,7 +396,7 @@ def _data_dir() -> str:
 def _load_index() -> list:
     path = os.path.join(_data_dir(), "index.json")
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return []
 
@@ -584,14 +404,14 @@ def _load_index() -> list:
 def _save_index(entries: list) -> None:
     os.makedirs(_data_dir(), exist_ok=True)
     path = os.path.join(_data_dir(), "index.json")
-    with open(path, "w") as f:
-        json.dump(entries, f, indent=2, default=str)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(entries, f, indent=2, default=str, ensure_ascii=False)
 
 
 def _load_config(event_id: str) -> dict:
     path = os.path.join(_data_dir(), event_id, "event.json")
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return {"event_id": event_id, "version": "1.0"}
 
@@ -600,8 +420,8 @@ def _save_config(event_id: str, config: dict) -> str:
     dirpath = os.path.join(_data_dir(), event_id)
     os.makedirs(dirpath, exist_ok=True)
     path = os.path.join(dirpath, "event.json")
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2, default=str)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, default=str, ensure_ascii=False)
     return path
 
 
@@ -621,7 +441,7 @@ def _roster_path(event_id: str, kind: str) -> str:
 def _load_roster(event_id: str, kind: str) -> list:
     path = _roster_path(event_id, kind)
     if os.path.exists(path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     return []
 
@@ -629,8 +449,8 @@ def _load_roster(event_id: str, kind: str) -> list:
 def _save_roster(event_id: str, kind: str, items: list) -> None:
     dirpath = os.path.join(_data_dir(), event_id)
     os.makedirs(dirpath, exist_ok=True)
-    with open(_roster_path(event_id, kind), "w") as f:
-        json.dump(items, f, indent=2, default=str)
+    with open(_roster_path(event_id, kind), "w", encoding="utf-8") as f:
+        json.dump(items, f, indent=2, default=str, ensure_ascii=False)
 
 
 # ── Core helpers ───────────────────────────────────────────────────────────────
@@ -677,244 +497,6 @@ def _parse_json(raw: str) -> dict:
             if depth == 0:
                 return json.loads(text[start: i + 1], object_pairs_hook=_merge_pairs)
     raise ValueError(f"Cannot parse JSON: {text[:300]}")
-
-def _normalize_event_type(value: Any) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip().lower()
-
-    mapping = {
-        "hackathon": "hackathon",
-        "hack": "hackathon",
-        "ideathon": "ideathon",
-        "ideaathon": "ideathon",
-        "case competition": "case_competition",
-        "case_competition": "case_competition",
-        "coding contest": "coding_contest",
-        "coding_contest": "coding_contest",
-        "contest": "coding_contest",
-        "quiz": "quiz",
-    }
-    return mapping.get(raw, raw if raw in {
-        "hackathon", "ideathon", "case_competition", "coding_contest", "quiz"
-    } else None)
-
-
-def _normalize_mode(value: Any) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip().lower()
-    if raw in {"online", "offline", "hybrid"}:
-        return raw
-    return None
-
-
-def _clean_tracks(tracks: Any) -> list:
-    if not isinstance(tracks, list):
-        return []
-    cleaned = []
-    for i, track in enumerate(tracks, start=1):
-        if isinstance(track, str) and track.strip():
-            cleaned.append({
-                "track_id": f"t{i}",
-                "name": track.strip(),
-                "description": "",
-            })
-        elif isinstance(track, dict):
-            name = str(track.get("name", "")).strip()
-            if not name:
-                continue
-            cleaned.append({
-                "track_id": track.get("track_id") or f"t{i}",
-                "name": name,
-                "description": str(track.get("description", "")).strip(),
-            })
-    return cleaned
-
-
-def _clean_constraints(constraints: Any) -> list:
-    if not isinstance(constraints, list):
-        return []
-
-    cleaned = []
-    supported = {"gender_diversity", "avoid_same_college", "balance_experience", "required_skill"}
-
-    for item in constraints:
-        if not isinstance(item, dict):
-            continue
-
-        ctype = str(item.get("type", "")).strip()
-        if ctype not in supported:
-            continue
-
-        if ctype == "gender_diversity":
-            min_per_team = item.get("min_per_team", 1)
-            try:
-                min_per_team = max(1, int(min_per_team))
-            except (TypeError, ValueError):
-                min_per_team = 1
-            cleaned.append({
-                "type": "gender_diversity",
-                "min_per_team": min_per_team,
-            })
-
-        elif ctype == "avoid_same_college":
-            cleaned.append({"type": "avoid_same_college"})
-
-        elif ctype == "balance_experience":
-            cleaned.append({"type": "balance_experience"})
-
-        elif ctype == "required_skill":
-            skill = str(item.get("skill", "")).strip()
-            if not skill:
-                continue
-            min_count = item.get("min_count", 1)
-            try:
-                min_count = max(1, int(min_count))
-            except (TypeError, ValueError):
-                min_count = 1
-            cleaned.append({
-                "type": "required_skill",
-                "skill": skill,
-                "min_count": min_count,
-            })
-
-    return cleaned
-
-
-def _clean_judges(judges: Any) -> list:
-    if not isinstance(judges, list):
-        return []
-
-    placeholder_names = {
-        "judge 1", "judge 2", "judge 3", "judge 4", "judge 5",
-        "judge1", "judge2", "judge3", "judge4", "judge5",
-        "judge", "actual name only", "placeholder", "tbd", "name",
-    }
-
-    cleaned = []
-    for i, judge in enumerate(judges, start=1):
-        if not isinstance(judge, dict):
-            continue
-
-        name = str(judge.get("name", "")).strip()
-        if not name or name.lower() in placeholder_names or name.lower().startswith("judge "):
-            continue
-
-        expertise = judge.get("expertise", [])
-        if isinstance(expertise, str):
-            expertise = [expertise]
-        if not isinstance(expertise, list):
-            expertise = []
-
-        cleaned.append({
-            "judge_id": judge.get("judge_id") or f"judge_{i}",
-            "name": name,
-            "company": str(judge.get("company", "")).strip(),
-            "expertise": [str(x).strip() for x in expertise if str(x).strip()],
-        })
-
-    return cleaned
-
-
-def _clean_prizes(prizes: Any) -> dict:
-    if not isinstance(prizes, dict):
-        return {}
-
-    cleaned = dict(prizes)
-
-    distribution = cleaned.get("distribution", [])
-    if not isinstance(distribution, list):
-        distribution = []
-
-    normalized_distribution = []
-    for item in distribution:
-        if not isinstance(item, dict):
-            continue
-        normalized_distribution.append({
-            "rank": item.get("rank"),
-            "title": str(item.get("title", "")).strip(),
-            "amount": str(item.get("amount", "")).strip(),
-            "description": str(item.get("description", "")).strip(),
-            "per_team": bool(item.get("per_team", True)),
-        })
-
-    cleaned["distribution"] = normalized_distribution
-
-    special_awards = cleaned.get("special_awards", [])
-    if not isinstance(special_awards, list):
-        special_awards = []
-    cleaned["special_awards"] = [
-        {
-            "name": str(item.get("name", "")).strip(),
-            "amount": str(item.get("amount", "")).strip(),
-            "description": str(item.get("description", "")).strip(),
-        }
-        for item in special_awards
-        if isinstance(item, dict) and str(item.get("name", "")).strip()
-    ]
-
-    if not cleaned.get("total_pool") and normalized_distribution:
-        total = _sum_prize_distribution(normalized_distribution)
-        if total:
-            cleaned["total_pool"] = total
-
-    if _prize_pool_missing({"prizes": cleaned}) and not normalized_distribution and not cleaned["special_awards"]:
-        return {}
-
-    cleaned.setdefault("currency", "INR")
-    return cleaned
-
-
-def _validate_and_clean_config(config: dict) -> dict:
-    if not isinstance(config, dict):
-        return {}
-
-    core = config.setdefault("core", {})
-    participants = config.setdefault("participants", {})
-    timeline = config.setdefault("timeline", {})
-
-    core["event_type"] = _normalize_event_type(core.get("event_type")) or core.get("event_type")
-    core["mode"] = _normalize_mode(core.get("mode")) or core.get("mode")
-    core["tracks"] = _clean_tracks(core.get("tracks", []))
-
-    team = participants.setdefault("team", {})
-    for key in ("min_size", "max_size", "exact_size"):
-        if key in team and team[key] is not None:
-            try:
-                team[key] = int(team[key])
-            except (TypeError, ValueError):
-                team[key] = None
-
-    if team.get("min_size") and team.get("max_size") and team["min_size"] > team["max_size"]:
-        team["min_size"], team["max_size"] = team["max_size"], team["min_size"]
-
-    capacity = participants.setdefault("capacity", {})
-    for key in ("max_teams", "max_participants"):
-        if key in capacity and capacity[key] is not None:
-            try:
-                capacity[key] = int(capacity[key])
-            except (TypeError, ValueError):
-                capacity[key] = None
-
-    team_matching = participants.setdefault("team_matching", {})
-    cleaned_constraints = _clean_constraints(team_matching.get("constraints", []))
-    team_matching["constraints"] = cleaned_constraints
-    team_matching["enabled"] = bool(cleaned_constraints)
-
-    judging_panel = config.setdefault("judging_panel", {})
-    judging_panel["judges"] = _clean_judges(judging_panel.get("judges", []))
-
-    prizes = _clean_prizes(config.get("prizes", {}))
-    if prizes:
-        config["prizes"] = prizes
-    elif "prizes" in config:
-        config["prizes"] = {}
-
-    if not isinstance(timeline.get("registration"), dict):
-        timeline["registration"] = {}
-
-    return config
 
 
 def _retry_after(err_str: str) -> str:
@@ -1021,7 +603,7 @@ async def _extract_initial_parallel(client: Groq, user_text: str) -> Tuple[dict,
 
 def _enrich_config(config: dict) -> dict:
     """Fill default schema fields (matching example_json) without overwriting collected data."""
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    now = datetime.now(IST).isoformat(timespec="seconds")
 
     if not isinstance(config.get("core"), dict):
         config["core"] = {}
@@ -1120,7 +702,7 @@ def _enrich_config(config: dict) -> dict:
             crit.setdefault("score_type", "integer")
             crit.setdefault("description", "")
         rnd.setdefault("judging", {
-            "judges_per_team": 3,
+            "judges_per_team": 2,
             "judge_assignment_method": "balanced",
             "avoid_judge_team_conflict": True,
             "scoring_method": "average",
@@ -1310,37 +892,67 @@ class SaveConfigRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[_organizer_only])
 async def chat(request: ChatRequest):
     if not settings.GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
 
     client = Groq(api_key=settings.GROQ_API_KEY)
-    event_id = request.event_id or str(uuid.uuid4())
+    # Prefer explicit `request.event_id`, then any `event_id` present inside
+    # `request.event_config` (some clients send the full config back), and
+    # finally fall back to a new UUID. This prevents losing state when the
+    # client omits `event_id` but includes `event_config`. A client-supplied id
+    # that isn't a valid UUID is discarded (path-traversal guard).
+    event_id = request.event_id or (request.event_config or {}).get("event_id") or ""
+    if not _is_uuid(event_id):
+        event_id = str(uuid.uuid4())
+
+    # Serialize concurrent turns for the same event so a slow model call in one
+    # request can't let another overwrite the JSON file with stale state.
+    lock = await _event_lock(event_id)
+    async with lock:
+        return await _chat_turn(client, event_id, request)
+
+
+async def _chat_turn(client: Groq, event_id: str, request: ChatRequest) -> dict:
     config = _load_config(event_id)
     config.setdefault("_skipped", [])
 
     user_messages = [m for m in request.messages if m.role == "user"]
     user_reply = user_messages[-1].content.strip() if user_messages else ""
 
-    next_q, _ = _next_question(config)
+    # Python determines what is still missing BEFORE processing this turn.
+    # `next_field` is the authoritative key for the question being answered —
+    # use it directly instead of reverse-mapping the question text (which used
+    # to mis-fire, e.g. the venue question contains the word "name").
+    next_q, next_field, _ = _next_question(config)
 
     models_used: List[str] = []
     updates: dict = {}
 
+    # ── Detect first turn ─────────────────────────────────────────────────────
     is_initial = len(user_messages) == 1 and not config.get("core", {}).get("name")
 
     if is_initial:
+        # Run 3 parallel section extractions
         updates, models_used = await _extract_initial_parallel(client, user_reply)
 
     elif _is_skip(user_reply):
-        field_key = _question_to_field_key(next_q)
-        if field_key and field_key not in config["_skipped"]:
+        # User said "no" / "not needed" — mark field as skipped, unless it's a
+        # required identity field (name/theme), in which case ignore the skip so
+        # the question is asked again.
+        field_key = next_field
+        if (
+            field_key
+            and field_key not in _NON_SKIPPABLE
+            and field_key not in config["_skipped"]
+        ):
             config["_skipped"].append(field_key)
         updates = {}
 
     else:
-        field_key = _question_to_field_key(next_q) or "unknown"
+        # Targeted single-model extraction for the specific field being answered
+        field_key = next_field or "unknown"
         context = (
             f"Field: {field_key}\n"
             f"Question asked: {next_q}\n\n"
@@ -1349,12 +961,7 @@ async def chat(request: ChatRequest):
         )
         try:
             result, model_used = await asyncio.to_thread(
-                _call_model_sync,
-                client,
-                _next_model(),
-                context,
-                1500,
-                _followup_system(),
+                _call_model_sync, client, _next_model(), context, 1500, _followup_system()
             )
             models_used = [model_used]
             updates = result if isinstance(result, dict) else {}
@@ -1366,9 +973,59 @@ async def chat(request: ChatRequest):
                     detail=f"AI rate limit reached. Please try again in {err_str.split(':', 1)[1]}.",
                 )
             raise HTTPException(status_code=500, detail=err_str)
+        except ValueError:
+            # The model returned JSON we couldn't parse (a transient formatting
+            # hiccup). Degrade gracefully — keep updates empty so the same
+            # question is asked again — instead of surfacing a 500.
+            models_used = []
+            updates = {}
 
+        # Python safety net for simple fields the AI might miss. Gate each net on
+        # the field actually being answered (`field_key`) — not on substrings of
+        # the question text, which collide (venue contains "name", tracks contains
+        # "themes") and could write the wrong value when an earlier field was skipped.
+        core = config.get("core", {})
+        updates_core = updates.get("core", {})
+        if field_key == "name" and not core.get("name") and not updates_core.get("name"):
+            updates = _deep_merge(updates, {"core": {"name": user_reply}})
+        elif field_key == "theme" and not core.get("theme") and not updates_core.get("theme"):
+            updates = _deep_merge(updates, {"core": {"theme": user_reply}})
+        elif field_key == "mode" and not core.get("mode") and not updates_core.get("mode"):
+            mv = user_reply.lower().strip()
+            if mv in ("online", "offline", "hybrid"):
+                updates = _deep_merge(updates, {"core": {"mode": mv}})
+
+        # Prize safety net: if AI put prizes fields at wrong nesting level, fix it
+        if field_key == "prizes":
+            prize_updates = updates.get("prizes", {})
+            # If AI returned top-level total_pool instead of wrapping in prizes key
+            if not prize_updates.get("total_pool") and updates.get("total_pool"):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": updates.pop("total_pool")}})
+            # If AI still didn't set total_pool but gave distribution, compute total from it
+            prize_updates = updates.get("prizes", {})
+            if not prize_updates.get("total_pool") and isinstance(prize_updates.get("distribution"), list):
+                total = _sum_prize_distribution(prize_updates["distribution"])
+                if total:
+                    updates = _deep_merge(updates, {"prizes": {"total_pool": total}})
+            # Last resort: if AI produced nothing useful, store raw reply so question moves forward
+            if _prize_pool_missing({"prizes": updates.get("prizes", {})}):
+                updates = _deep_merge(updates, {"prizes": {"total_pool": user_reply.strip()}})
+                # The user has now answered the prize question once. A non-numeric
+                # reply ("decide later") still fails _prize_pool_missing, which
+                # would re-ask forever — so mark prizes resolved to advance.
+                if "prizes" not in config["_skipped"]:
+                    config["_skipped"].append("prizes")
+
+    # ── Merge updates into config ─────────────────────────────────────────────
     if updates:
         config = _deep_merge(config, updates)
+
+    # Normalize theme: must be a short phrase, not a sentence. Truncate to a few
+    # keywords rather than discarding (setting it to None would re-ask the theme
+    # question every turn if the model kept returning a long phrase).
+    theme = config.get("core", {}).get("theme", "")
+    if isinstance(theme, str) and len(theme) > 50:
+        config["core"]["theme"] = " ".join(theme.split()[:6])[:50].strip()
 
     config.setdefault("event_id", event_id)
     config.setdefault("version", "1.0")
@@ -1376,12 +1033,11 @@ async def chat(request: ChatRequest):
     for key, val in _static_sections().items():
         config.setdefault(key, val)
 
-    config = _validate_and_clean_config(config)
     config = _enrich_config(config)
-
     _save_config(event_id, config)
 
-    message, is_complete = _next_question(config)
+    # Re-check after merge — Python is authoritative
+    message, _, is_complete = _next_question(config)
 
     return {
         "message": message,
@@ -1392,23 +1048,38 @@ async def chat(request: ChatRequest):
     }
 
 
-def _coerce_uuid(value):
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, TypeError, AttributeError):
-        return None
-
-
 async def _materialize_rounds_judges_rubric(
-    db: AsyncSession,
-    event: EventModel,
-    config: dict,
+    db: AsyncSession, event: EventModel, config: dict
 ) -> None:
-    """First-deploy setup: create the event's rounds, seed each round's rubric
-    from the AI scoring criteria, and invite any judges that have an email."""
+    """First-deploy setup: create the event's themes, rounds, seed each round's
+    rubric from the AI scoring criteria, and invite any judges that have an email."""
+    # ── Themes (from core.tracks) ──
+    tracks_cfg = ((config.get("core") or {}).get("tracks")) or []
+    seen_theme_names = set()
+    for t in tracks_cfg:
+        if not isinstance(t, dict):
+            continue
+        tname = str(t.get("name") or "").strip()
+        if not tname or tname.lower() in seen_theme_names:
+            continue
+        seen_theme_names.add(tname.lower())
+        skills = t.get("required_skills") or []
+        if not isinstance(skills, list):
+            skills = []
+        db.add(
+            ThemeModel(
+                event_id=event.id,
+                name=tname[:200],
+                description=(str(t.get("description") or "")[:1000]) or None,
+                required_skills=[str(s)[:60] for s in skills],
+            )
+        )
+    if seen_theme_names:
+        await db.commit()
+
     # ── Rounds ──
     rounds_cfg = config.get("rounds") or []
-    created: list[tuple[RoundModel, dict]] = []
+    created: List[Tuple[RoundModel, dict]] = []
     if rounds_cfg:
         for idx, r in enumerate(rounds_cfg):
             rname = r.get("round_name") or r.get("name") or f"Round {idx + 1}"
@@ -1476,22 +1147,36 @@ async def _materialize_rounds_judges_rubric(
 @router.post("/deploy")
 async def deploy_event(
     request: SaveConfigRequest,
-    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    auth: AuthContext = Depends(require_actor_type(["organizer", "admin"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deploy an AI-designed event as a real SQL event.
-
-    Idempotent: re-deploying with the same event_id updates the existing event
-    (event-level fields only — rounds/judges/rubric are materialized once on the
-    first deploy so later manual edits are preserved).
-    """
+    """Deploy an AI-designed event as a real SQL event so it appears on the
+    organizer dashboard (which reads the `events` table). Idempotent on event_id:
+    re-deploying updates event-level fields; rounds/judges/rubric are materialized
+    once on the first deploy so later manual edits are preserved. The JSON config
+    + index are kept in sync for the roster/detail endpoints."""
     config = request.event_config.copy()
+    event_id = request.event_id or config.get("event_id") or ""
+    if not _is_uuid(event_id):
+        event_id = str(uuid.uuid4())
+    event_uuid = uuid.UUID(event_id)
+    config["event_id"] = event_id
 
-    event_uuid = _coerce_uuid(request.event_id or config.get("event_id")) or uuid.uuid4()
-    config["event_id"] = str(event_uuid)
-    short_hash = generate_event_hash(str(event_uuid))
+    short_hash = generate_event_hash(event_id)
     config["hash"] = short_hash
 
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    config.setdefault("status", {})
+    config["status"]["current_phase"] = "ready"
+    config["status"]["updated_at"] = now_iso
+    config["status"].setdefault("created_at", now_iso)
+
+    # Persist the JSON config (chat already saved it; deploy may carry edits).
+    lock = await _event_lock(event_id)
+    async with lock:
+        filepath = _save_config(event_id, config)
+
+    # ── Materialize as a real SQL event so the dashboard (/events) can see it ──
     core = config.get("core") or {}
     participants = config.get("participants") or {}
     team = participants.get("team") or {}
@@ -1519,10 +1204,7 @@ async def deploy_event(
 
     if existing:
         if str(existing.organizer_id) != str(organizer_id):
-            raise HTTPException(
-                status_code=403,
-                detail="This event belongs to another organizer.",
-            )
+            raise HTTPException(status_code=403, detail="This event belongs to another organizer.")
         existing.name = name
         existing.type = etype
         existing.description = description
@@ -1553,15 +1235,35 @@ async def deploy_event(
     if is_new:
         await _materialize_rounds_judges_rubric(db, event, config)
 
-    return {"success": True, "event_id": str(event.id), "hash": short_hash}
+    # Keep the deployed-events index in sync (used by /ai/events).
+    async with _index_lock:
+        index = [e for e in _load_index() if e.get("event_id") != event_id]
+        index.insert(0, {
+            "event_id": event_id,
+            "hash": short_hash,
+            "name": name,
+            "type": etype,
+            "mode": core.get("mode", ""),
+            "theme": core.get("theme", ""),
+            "description": description,
+            "deployed_at": now_iso,
+            "judges_count": len((config.get("judging_panel") or {}).get("judges") or []),
+            "rounds_count": len(config.get("rounds") or []),
+            "max_teams": capacity.get("max_teams", 0),
+            "max_participants": capacity.get("max_participants", 0),
+            "prize_pool": (config.get("prizes") or {}).get("total_pool", ""),
+        })
+        _save_index(index)
+
+    return {"success": True, "event_id": event_id, "hash": short_hash, "file_path": filepath}
 
 
-@router.get("/events")
+@router.get("/events", dependencies=[_organizer_only])
 async def list_deployed_events():
     return _load_index()
 
 
-@router.get("/events/{hash}")
+@router.get("/events/{hash}", dependencies=[_organizer_only])
 async def get_deployed_event(hash: str):
     index = _load_index()
     entry = next((e for e in index if e.get("hash") == hash), None)
@@ -1589,41 +1291,44 @@ class JudgeEntry(BaseModel):
 
 
 def _require_event(event_id: str) -> None:
-    if not _event_exists(event_id):
+    # Reject non-UUID ids before they touch the filesystem (path-traversal guard),
+    # then confirm the event actually exists.
+    if not _is_uuid(event_id) or not _event_exists(event_id):
         raise HTTPException(status_code=404, detail="Event not found")
 
 
-@router.get("/events/{event_id}/detail")
+@router.get("/events/{event_id}/detail", dependencies=[_organizer_only])
 async def get_event_detail(event_id: str):
     _require_event(event_id)
     return _load_config(event_id)
 
 
-@router.get("/events/{event_id}/participants")
+@router.get("/events/{event_id}/participants", dependencies=[_organizer_only])
 async def list_event_participants(event_id: str):
     _require_event(event_id)
     return _load_roster(event_id, "participants")
 
 
-@router.post("/events/{event_id}/participants")
+@router.post("/events/{event_id}/participants", dependencies=[_organizer_only])
 async def add_event_participant(event_id: str, entry: ParticipantEntry):
     _require_event(event_id)
-    roster = _load_roster(event_id, "participants")
-    if any((p.get("email") or "").lower() == entry.email.lower() for p in roster):
-        raise HTTPException(status_code=409, detail="A participant with this email already exists")
-    roster.append({
-        "id": str(uuid.uuid4()),
-        "name": entry.name,
-        "email": entry.email,
-        "institution": entry.institution or "",
-        "skills": entry.skills or [],
-        "registration_status": "pending",
-    })
-    _save_roster(event_id, "participants", roster)
-    return roster[-1]
+    async with await _event_lock(event_id):
+        roster = _load_roster(event_id, "participants")
+        if any((p.get("email") or "").lower() == entry.email.lower() for p in roster):
+            raise HTTPException(status_code=409, detail="A participant with this email already exists")
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": entry.name,
+            "email": entry.email,
+            "institution": entry.institution or "",
+            "skills": entry.skills or [],
+            "registration_status": "pending",
+        })
+        _save_roster(event_id, "participants", roster)
+        return roster[-1]
 
 
-@router.post("/events/{event_id}/participants/upload-csv")
+@router.post("/events/{event_id}/participants/upload-csv", dependencies=[_organizer_only])
 async def upload_event_participants_csv(event_id: str, file: UploadFile = File(...)):
     _require_event(event_id)
     if not (file.filename or "").lower().endswith(".csv"):
@@ -1632,59 +1337,62 @@ async def upload_event_participants_csv(event_id: str, file: UploadFile = File(.
     content = await file.read()
     rows = parse_participant_csv(content)
 
-    roster = _load_roster(event_id, "participants")
-    seen = {(p.get("email") or "").lower() for p in roster}
-    added = 0
-    for r in rows:
-        email = (r.get("email") or "").lower()
-        if not email or email in seen:
-            continue
-        seen.add(email)
-        roster.append({
-            "id": str(uuid.uuid4()),
-            "name": r.get("name", ""),
-            "email": r.get("email", ""),
-            "institution": r.get("organization") or "",
-            "skills": r.get("skills") or [],
-            "registration_status": "pending",
-        })
-        added += 1
+    async with await _event_lock(event_id):
+        roster = _load_roster(event_id, "participants")
+        seen = {(p.get("email") or "").lower() for p in roster}
+        added = 0
+        for r in rows:
+            email = (r.get("email") or "").lower()
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            roster.append({
+                "id": str(uuid.uuid4()),
+                "name": r.get("name", ""),
+                "email": r.get("email", ""),
+                "institution": r.get("organization") or "",
+                "skills": r.get("skills") or [],
+                "registration_status": "pending",
+            })
+            added += 1
 
-    _save_roster(event_id, "participants", roster)
+        _save_roster(event_id, "participants", roster)
+        total = len(roster)
     return {
         "message": f"Imported {added} participant(s)"
         + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
         "count": added,
-        "total": len(roster),
+        "total": total,
         "participants": roster,
     }
 
 
-@router.get("/events/{event_id}/judges")
+@router.get("/events/{event_id}/judges", dependencies=[_organizer_only])
 async def list_event_judges(event_id: str):
     _require_event(event_id)
     return _load_roster(event_id, "judges")
 
 
-@router.post("/events/{event_id}/judges")
+@router.post("/events/{event_id}/judges", dependencies=[_organizer_only])
 async def add_event_judge(event_id: str, entry: JudgeEntry):
     _require_event(event_id)
-    roster = _load_roster(event_id, "judges")
-    if any((j.get("email") or "").lower() == entry.email.lower() for j in roster):
-        raise HTTPException(status_code=409, detail="A judge with this email already exists")
-    roster.append({
-        "id": str(uuid.uuid4()),
-        "name": entry.name,
-        "email": entry.email,
-        "institution": entry.institution or "",
-        "expertise": entry.expertise or [],
-        "rating": 5.0,
-    })
-    _save_roster(event_id, "judges", roster)
-    return roster[-1]
+    async with await _event_lock(event_id):
+        roster = _load_roster(event_id, "judges")
+        if any((j.get("email") or "").lower() == entry.email.lower() for j in roster):
+            raise HTTPException(status_code=409, detail="A judge with this email already exists")
+        roster.append({
+            "id": str(uuid.uuid4()),
+            "name": entry.name,
+            "email": entry.email,
+            "institution": entry.institution or "",
+            "expertise": entry.expertise or [],
+            "rating": 5.0,
+        })
+        _save_roster(event_id, "judges", roster)
+        return roster[-1]
 
 
-@router.post("/events/{event_id}/judges/upload-csv")
+@router.post("/events/{event_id}/judges/upload-csv", dependencies=[_organizer_only])
 async def upload_event_judges_csv(event_id: str, file: UploadFile = File(...)):
     _require_event(event_id)
     if not (file.filename or "").lower().endswith(".csv"):
@@ -1693,46 +1401,51 @@ async def upload_event_judges_csv(event_id: str, file: UploadFile = File(...)):
     content = await file.read()
     rows = parse_judge_csv(content)
 
-    roster = _load_roster(event_id, "judges")
-    seen = {(j.get("email") or "").lower() for j in roster}
-    added = 0
-    for r in rows:
-        email = (r.get("email") or "").lower()
-        if not email or email in seen:
-            continue
-        seen.add(email)
-        roster.append({
-            "id": str(uuid.uuid4()),
-            "name": r.get("name", ""),
-            "email": r.get("email", ""),
-            "institution": r.get("organization") or "",
-            "expertise": r.get("expertise") or [],
-            "rating": 5.0,
-        })
-        added += 1
+    async with await _event_lock(event_id):
+        roster = _load_roster(event_id, "judges")
+        seen = {(j.get("email") or "").lower() for j in roster}
+        added = 0
+        for r in rows:
+            email = (r.get("email") or "").lower()
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            roster.append({
+                "id": str(uuid.uuid4()),
+                "name": r.get("name", ""),
+                "email": r.get("email", ""),
+                "institution": r.get("organization") or "",
+                "expertise": r.get("expertise") or [],
+                "rating": 5.0,
+            })
+            added += 1
 
-    _save_roster(event_id, "judges", roster)
+        _save_roster(event_id, "judges", roster)
+        total = len(roster)
     return {
         "message": f"Imported {added} judge(s)"
         + (f", skipped {len(rows) - added} duplicate/invalid" if len(rows) - added > 0 else ""),
         "count": added,
-        "total": len(roster),
+        "total": total,
         "judges": roster,
     }
 
 
-@router.post("/save-config")
+@router.post("/save-config", dependencies=[_organizer_only])
 async def save_config(request: SaveConfigRequest):
     config = request.event_config.copy()
-    event_id = request.event_id or config.get("event_id") or str(uuid.uuid4())
+    event_id = request.event_id or config.get("event_id") or ""
+    if not _is_uuid(event_id):
+        event_id = str(uuid.uuid4())
     config["event_id"] = event_id
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     config.setdefault("status", {})
     config["status"]["updated_at"] = now_iso
     config["status"].setdefault("created_at", now_iso)
 
-    filepath = _save_config(event_id, config)
+    async with await _event_lock(event_id):
+        filepath = _save_config(event_id, config)
     return {
         "success": True,
         "event_id": event_id,
