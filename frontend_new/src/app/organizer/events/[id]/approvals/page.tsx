@@ -38,6 +38,8 @@ const TYPE_LABEL: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard Publish",
   stage_transition: "Stage Transition",
   progression: "Round Progression",
+  registration_form: "Registration Form",
+  event_deploy: "Event Deployment",
 };
 
 const STATUS_STYLE: Record<

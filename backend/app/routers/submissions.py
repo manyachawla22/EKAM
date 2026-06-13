@@ -31,6 +31,12 @@ from app.services.submission_service import (
     list_submissions_service,
     get_submission_service,
 )
+from app.services.file_storage import (
+    SUBMISSIONS_DIR,
+    store_pdf,
+    validate_pdf,
+    public_base_url,
+)
 
 router = APIRouter(
     prefix="/submissions",
@@ -38,34 +44,9 @@ router = APIRouter(
 )
 
 
-# Where uploaded submission files live on the local machine.
-SUBMISSIONS_DIR = os.path.join(settings.UPLOAD_DIR, "submissions")
-
-# Accept only PDFs for now.
-ALLOWED_CONTENT_TYPES = {"application/pdf"}
-MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB
-
-
 def _public_base_url(request: Request) -> str:
-    """
-    Base URL used to build absolute links to uploaded files.
-
-    Prefers settings.PUBLIC_BASE_URL (set to the ngrok URL so remote judges can
-    open files); falls back to the host the request came in on.
-    """
-    configured = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
-    if configured:
-        return configured
-    return str(request.base_url).rstrip("/")
-
-
-def _safe_name(filename: str) -> str:
-    """Strip the filename down to a safe basename."""
-    base = os.path.basename(filename or "file.pdf")
-    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", base).strip("_") or "file.pdf"
-    if not cleaned.lower().endswith(".pdf"):
-        cleaned += ".pdf"
-    return cleaned
+    """Base URL used to build absolute links to uploaded files (see file_storage)."""
+    return public_base_url(str(request.base_url))
 
 
 @router.post(
@@ -84,41 +65,10 @@ async def upload_submission_file(
     participant then includes that URL (alongside any GitHub/demo links) in the
     submission's `attachments` via POST /submissions/upload.
     """
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are allowed.",
-        )
-
     contents = await file.read()
-    if not contents:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty.",
-        )
-    if len(contents) > MAX_FILE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File too large (max 25 MB).",
-        )
-
-    os.makedirs(SUBMISSIONS_DIR, exist_ok=True)
-
-    display_name = _safe_name(file.filename)
-    # Unguessable stored name — the download endpoint is unauthenticated so a
-    # link can be opened directly (e.g. by a judge via ngrok in a new tab).
-    stored_name = f"{uuid.uuid4().hex}_{display_name}"
-    stored_path = os.path.join(SUBMISSIONS_DIR, stored_name)
-
-    with open(stored_path, "wb") as out:
-        out.write(contents)
-
-    url = (
-        f"{_public_base_url(request)}"
-        f"{settings.API_V1_STR}/submissions/files/{stored_name}"
-    )
-
-    return {"url": url, "filename": stored_name, "name": display_name}
+    validate_pdf(file.content_type, contents)
+    stored = store_pdf(contents, file.filename, _public_base_url(request))
+    return {"url": stored["url"], "filename": stored["filename"], "name": stored["name"]}
 
 
 @router.get("/files/{stored_name}")

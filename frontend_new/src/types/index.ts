@@ -50,6 +50,11 @@ export interface Event {
   participant_count?: number;
   team_count?: number;
   submission_count?: number;
+  registration_opens_at?: string | null;
+  registration_closes_at?: string | null;
+  registration_form_fields?: RegistrationFormField[] | null;
+  participants_model?: string | null;
+  individual_registration_allowed?: boolean | null;
 }
 
 export interface Round {
@@ -211,7 +216,9 @@ export type ApprovalRequestType =
   | "email_batch"
   | "leaderboard_publish"
   | "stage_transition"
-  | "progression";
+  | "progression"
+  | "registration_form"
+  | "event_deploy";
 
 export type ApprovalStatus =
   | "draft"
@@ -503,6 +510,63 @@ export interface AssessmentGuide {
   criteria_guides: AssessmentGuideCriterion[];
   key_questions: string[];
   generated_by?: "ai" | "rules";
+}
+
+// ─── Public registration page (Task 6) ───────────────────────────────────────
+
+export interface RegistrationFormField {
+  field_id: string;
+  label: string;
+  type: string; // text | email | tel | url | select | textarea | number | date
+  required?: boolean;
+  options?: string[];
+  unique_per_event?: boolean;
+}
+
+export interface PublicEventCard {
+  hash: string;
+  name: string;
+  type: string;
+  description?: string | null;
+  registration_open: boolean;
+  registration_closes_at?: string | null;
+  format: string; // "individual" | "team"
+  team_registration: boolean;
+}
+
+export interface PublicRoundSummary {
+  name: string;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
+export interface PublicEventDetail extends PublicEventCard {
+  registration_form_fields: RegistrationFormField[];
+  participants_model: string;
+  individual_registration_allowed: boolean;
+  min_team_size: number;
+  max_team_size: number;
+  rounds: PublicRoundSummary[];
+}
+
+export interface ResumeUploadResponse {
+  url: string;
+  name: string;
+  prefill: Record<string, unknown>;
+}
+
+export interface PublicMemberRegistration {
+  answers: Record<string, unknown>;
+  resume_url: string;
+  is_leader?: boolean;
+}
+
+export interface PublicRegisterRequest {
+  captcha_token?: string;
+  answers?: Record<string, unknown>;
+  resume_url?: string;
+  team_name?: string;
+  members?: PublicMemberRegistration[];
 }
 
 // ─── API Response Wrappers ────────────────────────────────────────────────────

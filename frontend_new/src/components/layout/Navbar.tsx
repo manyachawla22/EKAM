@@ -99,6 +99,11 @@ export default function Navbar() {
             </>
           ) : (
             <>
+              <Link href="/register">
+                <Button variant="ghost" size="sm">
+                  Register for an Event
+                </Button>
+              </Link>
               <Link href="/login">
                 <Button variant="secondary" size="sm">
                   Login

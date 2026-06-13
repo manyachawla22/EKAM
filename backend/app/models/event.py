@@ -8,10 +8,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Enum,
-    Text
+    Text,
+    Boolean
 )
 
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -85,6 +86,23 @@ class Event(Base):
     registration_opens_at = Column(DateTime(timezone=True), nullable=True)
 
     registration_closes_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ── Public registration page (Task 6) ───────────────────────────────────
+    # The organizer-defined registration form. A list of field specs, e.g.
+    # [{"field_id","label","type","required","options?","unique_per_event?"}].
+    # Authored via the AI chat or the manual editor; the manual editor's edits
+    # go live only after the registration_form ApprovalRequest is approved.
+    registration_form_fields = Column(JSONB, nullable=True)
+
+    # "individual" | "team" — drives the public registration flow shape.
+    participants_model = Column(String, default="individual")
+
+    # Whether a single person may register on their own (vs. only via a team).
+    individual_registration_allowed = Column(Boolean, default=True)
+
+    # Eligibility spec mirrored from the AI config (open_to, colleges, years…).
+    # Advisory at the public edge — hard gates are window/capacity/uniqueness.
+    eligibility = Column(JSONB, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),

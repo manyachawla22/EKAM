@@ -23,6 +23,12 @@ class RequestType(str, enum.Enum):
     leaderboard_publish = "leaderboard_publish"
     stage_transition = "stage_transition"
     progression = "progression"
+    # Publishing/editing the public registration form (Task 6). The executor
+    # writes the approved field set onto Event.registration_form_fields.
+    registration_form = "registration_form"
+    # Publishing an AI-designed event (gated deploy). On approval the executor
+    # flips the draft event to active and materializes rounds/judges/rubric.
+    event_deploy = "event_deploy"
 
 
 class ApprovalStatus(str, enum.Enum):

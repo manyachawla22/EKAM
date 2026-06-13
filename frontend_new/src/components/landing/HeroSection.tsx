@@ -394,6 +394,29 @@ export default function HeroSection() {
                 Sign In
               </motion.button>
             </Link>
+
+            <Link href="/register">
+              <motion.button
+                whileHover={{ scale: 1.04, borderColor: "rgba(232,80,58,0.6)", color: "#e8503a" }}
+                whileTap={{ scale: 0.96 }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  borderRadius: "0.75rem",
+                  border: "1px solid rgba(232,80,58,0.4)",
+                  background: "rgba(232,80,58,0.06)",
+                  padding: "1rem 2rem",
+                  fontSize: "1.125rem",
+                  fontWeight: 600,
+                  color: "#fff",
+                  cursor: "pointer",
+                  transition: "all 0.2s",
+                }}
+              >
+                Register for an Event
+              </motion.button>
+            </Link>
           </motion.div>
 
           {/* Stats */}
