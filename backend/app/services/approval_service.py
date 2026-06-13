@@ -29,8 +29,33 @@ async def create_approval_request(
     db.add(approval)
     await db.commit()
     await db.refresh(approval)
-    
+
+    await _publish_approval_signal(db, event_id, approval)
+
     return approval
+
+
+async def _publish_approval_signal(db: AsyncSession, event_id, approval) -> None:
+    """Push a live 'approval' signal to the event's organizer (SSE). Best-effort."""
+    try:
+        from app.models.event import Event
+        from app.services.event_bus import safe_publish
+
+        event = (
+            await db.execute(select(Event).where(Event.id == event_id))
+        ).scalars().first()
+        if event and event.organizer_id:
+            await safe_publish(
+                [str(event.organizer_id)],
+                {
+                    "type": "approval",
+                    "event_id": str(event_id),
+                    "approval_id": str(approval.id),
+                    "status": getattr(approval.status, "value", str(approval.status)),
+                },
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[approval_service] approval signal failed: {exc}")
 
 
 async def list_pending_approvals(
@@ -162,10 +187,15 @@ async def review_approval(
     
     await db.commit()
     await db.refresh(approval)
-    
+
     if action == ApprovalStatus.approved:
         await execute_approved_action(db, approval)
-        
+
+    # Signal the organizer's other open views that the pending list changed
+    # (the badge/panel should refresh). Pipeline-affecting executions publish
+    # their own 'pipeline' signal from execute_pipeline_transition.
+    await _publish_approval_signal(db, approval.event_id, approval)
+
     return approval
 
 

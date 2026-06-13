@@ -35,13 +35,18 @@ export default function PortalLoginPage() {
         const profile = await getMe();
         setStatus("success");
         toast.success("Logged in successfully!");
+        // Honor an explicit `next` path (e.g. a magic link that points a judge
+        // straight to their anomalies page); only internal paths are allowed.
+        const nextParam = searchParams.get("next");
+        const dest =
+          nextParam && nextParam.startsWith("/")
+            ? nextParam
+            : getRoleDashboard(
+                profile.role as Parameters<typeof getRoleDashboard>[0]
+              );
         // Small delay so the user sees the success state before redirect
         setTimeout(() => {
-          router.push(
-            getRoleDashboard(
-              profile.role as Parameters<typeof getRoleDashboard>[0]
-            )
-          );
+          router.push(dest);
         }, 1200);
       } catch (err) {
         const message =

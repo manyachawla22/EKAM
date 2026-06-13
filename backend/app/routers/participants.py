@@ -14,6 +14,7 @@ from app.core.auth_context import AuthContext
 from app.middleware.auth import require_actor_type, require_event_access
 
 from app.models.participant import Participant as ParticipantModel
+from app.models.event import Event as EventModel
 
 from app.schemas.participant import (
     Participant,
@@ -105,6 +106,24 @@ async def register_participant(
                     "(email must match the signed-in account)."
                 ),
             )
+
+        # Time gate: self-registration must fall inside the event's registration
+        # window. Organizers (below) can still add people anytime, since they
+        # manage the deadlines. No window configured → always open.
+        event = (
+            await db.execute(
+                select(EventModel).where(EventModel.id == participant_in.event_id)
+            )
+        ).scalars().first()
+        if event:
+            from app.services.time_enforcement import registration_window_state
+
+            reg_ok, reg_reason = registration_window_state(event)
+            if not reg_ok:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=reg_reason,
+                )
     else:
         # Organizers must own the event they're registering people into.
         if not auth.can_access_event(str(participant_in.event_id)):

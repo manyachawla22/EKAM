@@ -181,6 +181,7 @@ Return ONLY valid JSON. No markdown fences. No extra text.
 Rules:
 - Use actual names from context, never write [Name] or placeholders.
 - Be concise and warm.
+- Include the exact literal token {{{{magic_link}}}} once, on its own line in body_text and inside its own <p> in body_html, where the recipient should click to log in. It will be replaced with their personal one-click login link (no OTP). Do NOT invent a URL — use the token verbatim.
 - Sign off as: Team EKAM
 """
 
@@ -262,6 +263,7 @@ def _fallback_template(email_type: str, context: dict) -> dict:
         f"Hello,\n\n"
         f"This is an update from {event_name}.\n\n"
         f"{message}\n\n"
+        f"{{{{magic_link}}}}\n\n"
         f"Team EKAM"
     )
 
@@ -269,6 +271,7 @@ def _fallback_template(email_type: str, context: dict) -> dict:
         f"<p>Hello,</p>"
         f"<p>This is an update from <strong>{event_name}</strong>.</p>"
         f"<p>{message}</p>"
+        f"<p>{{{{magic_link}}}}</p>"
         f"<p>Team EKAM</p>"
     )
 

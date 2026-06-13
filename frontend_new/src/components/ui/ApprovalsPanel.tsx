@@ -9,6 +9,7 @@ import {
   reviewApproval,
   autoFormTeams,
 } from "@/lib/api";
+import { useEventStream } from "@/lib/useEventStream";
 import type { ApprovalRequest, ApprovalRequestType } from "@/types";
 
 const LABEL: Record<ApprovalRequestType, string> = {
@@ -50,14 +51,19 @@ export default function ApprovalsPanel({ eventId }: Props) {
     }
   }, [eventId]);
 
-  // Poll every 10 seconds
+  // Live updates arrive via SSE (useEventStream below); this poll is a slow
+  // safety net for dropped streams / non-JWT sessions.
   useEffect(() => {
     fetchApprovals();
-    intervalRef.current = setInterval(fetchApprovals, 10_000);
+    intervalRef.current = setInterval(fetchApprovals, 60_000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [fetchApprovals]);
+
+  // Live push: a new/approved/rejected approval or a pipeline advance means the
+  // pending list likely changed — refetch immediately.
+  useEventStream(["approval", "pipeline"], fetchApprovals);
 
   const handleApprove = async (approval: ApprovalRequest) => {
     setActionLoading(approval.id);

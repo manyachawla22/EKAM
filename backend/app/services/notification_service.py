@@ -32,7 +32,19 @@ async def create_notification(
     db.add(notification)
     await db.commit()
     await db.refresh(notification)
-    
+
+    # Push a live "notification" signal to the recipient's open dashboards (SSE).
+    # Best-effort: never let the bus break the notification write.
+    from app.services.event_bus import safe_publish
+    await safe_publish(
+        [str(user_id)],
+        {
+            "type": "notification",
+            "event_id": str(event_id) if event_id else None,
+            "id": str(notification.id),
+        },
+    )
+
     return notification
 
 

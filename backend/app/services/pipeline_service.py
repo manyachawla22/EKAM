@@ -782,6 +782,24 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
 
     await db.commit()
 
+    # Push a live "pipeline" signal to the organizer and all participants so
+    # their pipeline views advance instantly (SSE). Best-effort.
+    try:
+        from app.services.event_bus import safe_publish
+
+        participant_ids = (
+            await db.execute(
+                select(Participant.id).where(Participant.event_id == event_id)
+            )
+        ).scalars().all()
+        targets = [str(event.organizer_id)] + [str(pid) for pid in participant_ids]
+        await safe_publish(
+            targets,
+            {"type": "pipeline", "event_id": str(event_id), "current_step": next_step},
+        )
+    except Exception as exc:
+        print(f"[pipeline_service] pipeline signal failed: {exc}")
+
     # Keep each round's status column in step with the new cursor position so
     # the judge/organizer UIs show done/active/upcoming correctly.
     try:

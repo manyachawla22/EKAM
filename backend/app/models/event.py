@@ -79,6 +79,13 @@ class Event(Base):
 
     max_participants = Column(Integer, default=0)
 
+    # Registration window (UTC). When set, the public registration endpoint
+    # rejects self-registrations outside [opens_at, closes_at]. Nullable so
+    # events without a configured window behave as before (always open).
+    registration_opens_at = Column(DateTime(timezone=True), nullable=True)
+
+    registration_closes_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now()

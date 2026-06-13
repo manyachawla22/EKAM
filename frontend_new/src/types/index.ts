@@ -291,6 +291,33 @@ export interface Anomaly {
   created_at: string;
 }
 
+// One rubric criterion within a judge's flagged evaluation, with their score.
+export interface MyAnomalyRubricItem {
+  id: string;
+  name: string;
+  max_score: number;
+  description?: string | null;
+  my_score: number;
+}
+
+// A judge's own anomaly, enriched for the private fix-it page.
+export interface MyAnomaly {
+  id: string;
+  event_id: string;
+  anomaly_type: AnomalyType;
+  severity: number;
+  description: string;
+  is_resolved: boolean;
+  created_at: string | null;
+  submission_id: string;
+  round_id: string;
+  round_name: string;
+  team_name: string | null;
+  my_total_score: number | null;
+  panel_average: number | null;
+  rubric: MyAnomalyRubricItem[];
+}
+
 // ─── API Request Bodies ────────────────────────────────────────────────────────
 
 export interface LoginBody {
