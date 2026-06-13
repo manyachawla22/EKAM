@@ -43,6 +43,11 @@ import type {
   GenerateReportBody,
   AutoFormTeamsResponse,
   UserRole,
+  PublicEventCard,
+  PublicEventDetail,
+  ResumeUploadResponse,
+  PublicRegisterRequest,
+  RegistrationFormField,
 } from "@/types";
 
 export const API_BASE =
@@ -1012,5 +1017,83 @@ export async function submitTeamPreference(
   return apiFetch<void>(`/teams/${eventId}/${teamId}/preferences`, {
     method: "POST",
     body: JSON.stringify({ preferred_name, preferred_theme_id: preferred_theme_id ?? null }),
+  });
+}
+
+// ─── PUBLIC REGISTRATION (Task 6 — no auth) ───────────────────────────────────
+// These hit /api/v1/public/* and intentionally send NO Authorization header:
+// the page is open to anyone without signup/login.
+
+async function publicFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE}/public${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, options);
+  } catch {
+    await new Promise((r) => setTimeout(r, 600));
+    response = await fetch(url, options);
+  }
+  if (!response.ok) {
+    let msg = `API Error: ${response.status}`;
+    try {
+      const data = (await response.json()) as { detail?: unknown };
+      const d = data.detail;
+      if (typeof d === "string") msg = d;
+      else if (Array.isArray(d))
+        msg = d
+          .map((it) =>
+            it && typeof it === "object" ? (it as { msg?: string }).msg || JSON.stringify(it) : String(it)
+          )
+          .join("; ");
+      else if (d) msg = JSON.stringify(d);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(`${msg} (${response.status})`);
+  }
+  if (response.status === 204) return {} as T;
+  return response.json() as Promise<T>;
+}
+
+export async function listPublicEvents(): Promise<PublicEventCard[]> {
+  return publicFetch<PublicEventCard[]>("/events");
+}
+
+export async function getPublicEvent(hash: string): Promise<PublicEventDetail> {
+  return publicFetch<PublicEventDetail>(`/events/${hash}`);
+}
+
+export async function uploadPublicResume(
+  hash: string,
+  file: File
+): Promise<ResumeUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  return publicFetch<ResumeUploadResponse>(`/events/${hash}/resume`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function registerPublic(
+  hash: string,
+  body: PublicRegisterRequest
+): Promise<{ success: boolean; status: string; participant_id?: string; team_id?: string; ats_score?: number | null; members?: number }> {
+  return publicFetch(`/events/${hash}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── REGISTRATION FORM EDITOR (organizer — approval-gated) ────────────────────
+export async function proposeRegistrationForm(
+  eventId: string,
+  fields: RegistrationFormField[],
+  opts?: { participants_model?: string; individual_registration_allowed?: boolean }
+): Promise<{ approval_id: string; status: string; message: string }> {
+  return apiFetch(`/events/${eventId}/registration-form`, {
+    method: "POST",
+    body: JSON.stringify({ fields, ...(opts || {}) }),
   });
 }

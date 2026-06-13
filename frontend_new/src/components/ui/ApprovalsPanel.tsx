@@ -19,6 +19,8 @@ const LABEL: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard Publication",
   stage_transition: "Stage Transition",
   progression: "Progression",
+  registration_form: "Registration Form",
+  event_deploy: "Event Deployment",
 };
 
 const DESCRIPTION: Record<ApprovalRequestType, string> = {
@@ -28,6 +30,8 @@ const DESCRIPTION: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard is ready to publish.",
   stage_transition: "A stage transition has been proposed.",
   progression: "A progression proposal is pending review.",
+  registration_form: "A public registration form is ready. Approve to publish it.",
+  event_deploy: "An AI-designed event is ready. Approve to publish the event and its registration form.",
 };
 
 interface Props {

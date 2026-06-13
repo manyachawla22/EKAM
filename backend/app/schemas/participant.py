@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from uuid import UUID
 from datetime import datetime
 
@@ -35,6 +35,9 @@ class ParticipantResponse(ParticipantBase):
     event_id: UUID
 
     ats_score: Optional[float]
+
+    resume_url: Optional[str] = None
+    registration_data: Optional[Dict[str, Any]] = None
 
     status: RegistrationStatus
 

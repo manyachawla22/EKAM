@@ -1235,6 +1235,30 @@ async def deploy_event(
     reg_opens = parse_dt(reg_cfg.get("opens_at"))
     reg_closes = parse_dt(reg_cfg.get("closes_at"))
 
+    # ── Public registration page (Task 6) ───────────────────────────────────
+    # Promote the form spec from the AI JSON into SQL so the public, unauthenticated
+    # endpoints can serve it without touching disk. For AI-deployed events we
+    # populate the form directly (preserving the one-shot deploy UX); the manual
+    # editor's later edits go through the registration_form approval gate.
+    p_model = (participants.get("model") or "individual").lower()
+    if p_model not in ("individual", "team"):
+        p_model = "individual"
+    individual_reg_allowed = bool(
+        participants.get("individual_registration_allowed", p_model == "individual")
+    )
+    auto_team = bool(participants.get("auto_team_matching_allowed", False))
+    form_fields = participants.get("registration_form_fields") or None
+    eligibility_cfg = participants.get("eligibility") or None
+    # Teams the participants bring themselves (leader registers members) →
+    # preformed; individual events or org-formed (auto-matched) teams →
+    # platform_generated. team_formation_type is stored only (not consumed by
+    # the pipeline), so deriving it here is safe.
+    derived_formation = (
+        TeamFormationType.preformed
+        if (p_model == "team" and not auto_team)
+        else TeamFormationType.platform_generated
+    )
+
     organizer_id = auth.entity.id
 
     existing = (
@@ -1253,6 +1277,14 @@ async def deploy_event(
         existing.max_participants = max_participants
         existing.registration_opens_at = reg_opens
         existing.registration_closes_at = reg_closes
+        existing.participants_model = p_model
+        existing.individual_registration_allowed = individual_reg_allowed
+        existing.eligibility = eligibility_cfg
+        existing.team_formation_type = derived_formation
+        # Only seed the form on first population — don't clobber an organizer's
+        # approved manual edits on re-deploy.
+        if not existing.registration_form_fields and form_fields:
+            existing.registration_form_fields = form_fields
         event = existing
     else:
         event = EventModel(
@@ -1262,22 +1294,44 @@ async def deploy_event(
             hash=short_hash,
             description=description,
             type=etype,
-            status=EventStatus.active,
+            # Gated deploy: a new event lands as DRAFT and is only published
+            # (→ active) when the organizer approves the event_deploy request.
+            # Draft events are excluded from the public listing (status filter).
+            status=EventStatus.draft,
             stage=EventStage.registration,
-            team_formation_type=TeamFormationType.platform_generated,
+            team_formation_type=derived_formation,
             min_team_size=min_size,
             max_team_size=max_size,
             max_participants=max_participants,
             registration_opens_at=reg_opens,
             registration_closes_at=reg_closes,
+            participants_model=p_model,
+            individual_registration_allowed=individual_reg_allowed,
+            eligibility=eligibility_cfg,
+            registration_form_fields=form_fields,
         )
         db.add(event)
 
     await db.commit()
     await db.refresh(event)
 
-    if is_new:
-        await _materialize_rounds_judges_rubric(db, event, config)
+    # Gated deploy (option C): instead of materializing + going live here, create
+    # a pending `event_deploy` approval. The event stays draft (new) until the
+    # organizer approves it in the Approvals panel — at which point the executor
+    # flips it to active and materializes rounds/judges/rubric (+ the form goes
+    # live with it, since the form fields are already on the row). Re-deploys of
+    # an already-live event update its fields immediately (it's already public)
+    # and still record an approval for audit; the executor is idempotent.
+    from app.models.approval import RequestType as _RequestType
+    from app.services.approval_service import create_approval_request
+
+    deploy_approval = await create_approval_request(
+        db,
+        event_id=str(event.id),
+        request_type=_RequestType.event_deploy,
+        payload={"event_id": event_id, "config": config},
+        requested_by=str(organizer_id),
+    )
 
     # Keep the deployed-events index in sync (used by /ai/events).
     async with _index_lock:
@@ -1299,7 +1353,14 @@ async def deploy_event(
         })
         _save_index(index)
 
-    return {"success": True, "event_id": event_id, "hash": short_hash, "file_path": filepath}
+    return {
+        "success": True,
+        "event_id": event_id,
+        "hash": short_hash,
+        "file_path": filepath,
+        "status": "pending_approval",
+        "approval_id": str(deploy_approval.id),
+    }
 
 
 @router.get("/events", dependencies=[_organizer_only])

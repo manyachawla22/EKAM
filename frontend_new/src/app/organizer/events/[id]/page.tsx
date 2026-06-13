@@ -32,6 +32,7 @@ import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import DynamicPipeline from "@/components/pipeline/DynamicPipeline";
+import RegistrationFormEditor from "@/components/organizer/RegistrationFormEditor";
 
 const STATUSES: EventStatus[] = ["draft", "active", "completed", "archived"];
 
@@ -523,6 +524,9 @@ export default function EventDetailPage() {
             </Button>
           </form>
         </div>
+
+        {/* Public registration form editor (approval-gated) */}
+        <RegistrationFormEditor eventId={id} initialFields={event.registration_form_fields} />
 
         {/* Pending approvals */}
         {(dashboard?.pending_approvals ?? []).length > 0 && (

@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # ----- Frontend URL for magic links -----
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # ----- Captcha (public registration page, Task 6) -----
+    # Cloudflare Turnstile secret. When empty, captcha verification is DISABLED
+    # (dev/demo without keys still works); set it in prod to enforce.
+    TURNSTILE_SECRET_KEY: str = ""
+    TURNSTILE_VERIFY_URL: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
     # ----- File storage / submissions -----
     # Local directory (relative to the backend working dir) where uploaded
     # submission files (PDFs) are stored.
