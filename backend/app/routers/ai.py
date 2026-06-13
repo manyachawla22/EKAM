@@ -1085,14 +1085,31 @@ async def _materialize_rounds_judges_rubric(
     # this single-commit batch would otherwise share an identical created_at —
     # and any `ORDER BY created_at` (the judge dashboard, the pipeline's per-round
     # step order) would then return them jumbled and inconsistently per query.
+    from app.services.time_enforcement import parse_dt
+
+    def _round_dates(r: dict):
+        """Pull start/end out of a round's `dates` block, tolerant of key names."""
+        d = r.get("dates") or {}
+        start = parse_dt(
+            d.get("start") or d.get("starts_at") or d.get("opens_at") or d.get("start_date")
+        )
+        end = parse_dt(
+            d.get("end") or d.get("ends_at") or d.get("deadline")
+            or d.get("closes_at") or d.get("submission_deadline") or d.get("end_date")
+        )
+        return start, end
+
     base_now = datetime.now(timezone.utc)
     if rounds_cfg:
         for idx, r in enumerate(rounds_cfg):
             rname = r.get("round_name") or r.get("name") or f"Round {idx + 1}"
+            start_date, end_date = _round_dates(r)
             rnd = RoundModel(
                 event_id=event.id,
                 name=str(rname)[:120],
                 status=RoundStatus.upcoming,
+                start_date=start_date,
+                end_date=end_date,
                 created_at=base_now + timedelta(seconds=idx),
             )
             db.add(rnd)
@@ -1211,6 +1228,13 @@ async def deploy_event(
     except (TypeError, ValueError):
         max_participants = 0
 
+    # Registration window from the AI config timeline (IST → UTC).
+    from app.services.time_enforcement import parse_dt
+
+    reg_cfg = ((config.get("timeline") or {}).get("registration")) or {}
+    reg_opens = parse_dt(reg_cfg.get("opens_at"))
+    reg_closes = parse_dt(reg_cfg.get("closes_at"))
+
     organizer_id = auth.entity.id
 
     existing = (
@@ -1227,6 +1251,8 @@ async def deploy_event(
         existing.min_team_size = min_size
         existing.max_team_size = max_size
         existing.max_participants = max_participants
+        existing.registration_opens_at = reg_opens
+        existing.registration_closes_at = reg_closes
         event = existing
     else:
         event = EventModel(
@@ -1242,6 +1268,8 @@ async def deploy_event(
             min_team_size=min_size,
             max_team_size=max_size,
             max_participants=max_participants,
+            registration_opens_at=reg_opens,
+            registration_closes_at=reg_closes,
         )
         db.add(event)
 

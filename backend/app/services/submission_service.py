@@ -96,7 +96,20 @@ async def create_submission_service(
                     detail="Your team did not advance and can no longer submit for this event.",
                 )
 
-        # The submission window for this round closes once the pipeline moves
+        # Time gate: reject submissions outside the round's [start_date, end_date]
+        # window. This is independent of the pipeline gate below — "no late
+        # writes" (time) vs "advance when ready" (pipeline) are separate
+        # guarantees. No dates configured → not time-gated.
+        from app.services.time_enforcement import submission_window_state
+
+        time_ok, time_reason = submission_window_state(round_obj)
+        if not time_ok:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=time_reason,
+            )
+
+        # The submission window for this round also closes once the pipeline moves
         # past its submission step.
         from app.services.pipeline_service import is_round_submission_closed
 

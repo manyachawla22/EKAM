@@ -13,6 +13,7 @@ import type {
   PipelineState,
   Notification,
   Anomaly,
+  MyAnomaly,
   Submission,
   Evaluation,
   Report,
@@ -356,6 +357,30 @@ export async function listRounds(eventId: string): Promise<Round[]> {
   return apiFetch<Round[]>(`/rounds/${eventId}`);
 }
 
+// Organizer: set/postpone a round's submission window. `reopen` also restores
+// teams disqualified for missing this round's deadline.
+export async function updateRoundWindow(
+  eventId: string,
+  roundId: string,
+  body: { start_date?: string | null; end_date?: string | null; reopen?: boolean }
+): Promise<Round> {
+  return apiFetch<Round>(`/rounds/${eventId}/${roundId}/window`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+// Organizer: set/postpone the event's registration window.
+export async function updateRegistrationWindow(
+  eventId: string,
+  body: { registration_opens_at?: string | null; registration_closes_at?: string | null }
+): Promise<Event> {
+  return apiFetch<Event>(`/events/${eventId}/registration-window`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 // ─── PARTICIPANTS ─────────────────────────────────────────────────────────────
 
 export async function registerParticipant(
@@ -679,6 +704,23 @@ export async function resolveAnomaly(
   return apiFetch<{ message: string }>(
     `/anomalies/${eventId}/${anomalyId}/resolve`,
     { method: "POST" }
+  );
+}
+
+// Judge-scoped: the calling judge's own anomalies (server-enforced ownership),
+// enriched so each can be fixed inline.
+export async function listMyAnomalies(eventId?: string): Promise<MyAnomaly[]> {
+  const qs = eventId ? `?event_id=${encodeURIComponent(eventId)}` : "";
+  return apiFetch<MyAnomaly[]>(`/anomalies/mine${qs}`);
+}
+
+export async function resolveMyAnomaly(
+  anomalyId: string,
+  body: { rubric_scores: Record<string, number>; feedback?: string }
+): Promise<{ message: string; anomaly_id: string }> {
+  return apiFetch<{ message: string; anomaly_id: string }>(
+    `/anomalies/mine/${anomalyId}/resolve`,
+    { method: "POST", body: JSON.stringify(body) }
   );
 }
 

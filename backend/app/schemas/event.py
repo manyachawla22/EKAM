@@ -78,6 +78,9 @@ class EventResponse(EventBase):
     status: EventStatus
     stage: EventStage
 
+    registration_opens_at: Optional[datetime] = None
+    registration_closes_at: Optional[datetime] = None
+
     created_at: datetime
     updated_at: Optional[datetime]
 

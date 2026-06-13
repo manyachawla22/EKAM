@@ -9,6 +9,7 @@ import { AlertTriangle, CheckCircle, Clock, Filter } from "lucide-react";
 import { toast } from "sonner";
 import { listAnomalies, resolveAnomaly } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useEventStream } from "@/lib/useEventStream";
 import type { Anomaly, AnomalyType } from "@/types";
 import Button from "@/components/ui/Button";
 
@@ -112,6 +113,9 @@ export default function AnomaliesPage() {
     }
     fetchAll();
   }, [authLoading, user, fetchAll]);
+
+  // Live push: refetch when an anomaly is flagged for this event.
+  useEventStream(["anomaly"], fetchAll);
 
   const filtered = items.filter((a) => {
     if (filter === "open") return !a.is_resolved;

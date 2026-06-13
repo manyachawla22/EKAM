@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import type { Round, Submission, Team, Event, EventStage } from "@/types";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { useEventStream } from "@/lib/useEventStream";
 import Button from "@/components/ui/Button";
 
 const card: React.CSSProperties = {
@@ -115,10 +116,17 @@ export default function LeaderboardPage() {
       .finally(() => setLoadingBoard(false));
   }, [selectedRound]);
 
-  useAutoRefresh(() => {
+  const refreshAll = useCallback(() => {
     fetchBase();
     if (selectedRound) getLeaderboard(selectedRound).then(setSubmissions).catch(() => {});
-  });
+  }, [fetchBase, selectedRound]);
+
+  // Live push: a submitted/updated score, a pipeline advance, or a resolved
+  // anomaly all change the board — refetch instantly (SSE).
+  useEventStream(["leaderboard", "pipeline", "anomaly"], refreshAll);
+
+  // Slow polling fallback (dropped stream / non-JWT session).
+  useAutoRefresh(refreshAll, 60000);
 
   const teamName = (teamId: string) =>
     teams.find((t) => t.id === teamId)?.name ?? `Team ${teamId.slice(0, 6)}`;

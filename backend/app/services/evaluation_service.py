@@ -103,6 +103,42 @@ async def submit_evaluation_service(
         except Exception as exc:
             print(f"[evaluation_service] auto-propose transition failed: {exc}")
 
+        # Live push: a new/updated score changed this round's leaderboard —
+        # signal the organizer + participants so leaderboard/status views refetch
+        # instantly (SSE). Best-effort; never blocks evaluation submission.
+        try:
+            from app.models.event import Event
+            from app.models.participant import Participant
+            from app.services.event_bus import safe_publish
+
+            round_obj = (
+                await db.execute(select(Round).where(Round.id == submission.round_id))
+            ).scalars().first()
+            if round_obj and round_obj.event_id:
+                event = (
+                    await db.execute(select(Event).where(Event.id == round_obj.event_id))
+                ).scalars().first()
+                participant_ids = (
+                    await db.execute(
+                        select(Participant.id).where(
+                            Participant.event_id == round_obj.event_id
+                        )
+                    )
+                ).scalars().all()
+                targets = [str(pid) for pid in participant_ids]
+                if event and event.organizer_id:
+                    targets.append(str(event.organizer_id))
+                await safe_publish(
+                    targets,
+                    {
+                        "type": "leaderboard",
+                        "event_id": str(round_obj.event_id),
+                        "round_id": str(submission.round_id),
+                    },
+                )
+        except Exception as exc:
+            print(f"[evaluation_service] leaderboard signal failed: {exc}")
+
     return evaluation
 
 

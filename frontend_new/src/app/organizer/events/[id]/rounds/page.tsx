@@ -5,9 +5,9 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Layers, Calendar, SlidersHorizontal } from "lucide-react";
+import { Plus, Layers, Calendar, SlidersHorizontal, CalendarClock } from "lucide-react";
 import { toast } from "sonner";
-import { listRounds, createRound } from "@/lib/api";
+import { listRounds, createRound, updateRoundWindow } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Round, RoundStatus } from "@/types";
 import Button from "@/components/ui/Button";
@@ -32,6 +32,53 @@ export default function RoundsPage() {
     start_date: "",
     end_date: "",
   });
+
+  // Deadline-editing modal state.
+  const [editRound, setEditRound] = useState<Round | null>(null);
+  const [editForm, setEditForm] = useState({ start_date: "", end_date: "", reopen: false });
+  const [savingWindow, setSavingWindow] = useState(false);
+
+  // UTC ISO → value for a <input type="datetime-local"> (local wall-clock).
+  const toLocalInput = (iso?: string | null) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  // datetime-local (local) → UTC ISO string, or null when cleared.
+  const fromLocalInput = (v: string) => (v ? new Date(v).toISOString() : null);
+
+  const openEdit = (round: Round) => {
+    setEditRound(round);
+    setEditForm({
+      start_date: toLocalInput(round.start_date),
+      end_date: toLocalInput(round.end_date),
+      reopen: false,
+    });
+  };
+
+  const handleSaveWindow = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editRound || !id) return;
+    setSavingWindow(true);
+    try {
+      const updated = await updateRoundWindow(id, editRound.id, {
+        start_date: fromLocalInput(editForm.start_date),
+        end_date: fromLocalInput(editForm.end_date),
+        reopen: editForm.reopen,
+      });
+      setRounds((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+      setEditRound(null);
+      toast.success(
+        editForm.reopen ? "Deadline updated — affected teams reopened." : "Deadline updated."
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update deadline");
+    } finally {
+      setSavingWindow(false);
+    }
+  };
 
   const fetchRounds = useCallback(() => {
     if (!id) return;
@@ -231,6 +278,9 @@ export default function RoundsPage() {
                   </div>
                 )}
               </div>
+              <Button variant="secondary" onClick={() => openEdit(round)}>
+                <CalendarClock size={14} /> Deadline
+              </Button>
               <Button variant="secondary" onClick={() => setRubricRound(round)}>
                 <SlidersHorizontal size={14} /> Rubric
               </Button>
@@ -245,6 +295,62 @@ export default function RoundsPage() {
         roundName={rubricRound?.name}
         onClose={() => setRubricRound(null)}
       />
+
+      <Modal
+        open={!!editRound}
+        onClose={() => setEditRound(null)}
+        title={editRound ? `Edit deadline — ${editRound.name}` : "Edit deadline"}
+      >
+        <form
+          onSubmit={handleSaveWindow}
+          style={{ display: "flex", flexDirection: "column", gap: "1rem" }}
+        >
+          <p style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.45)", margin: 0, lineHeight: 1.5 }}>
+            Submissions are blocked outside this window. Leave a field empty to
+            leave that side open.
+          </p>
+          <Input
+            label="Opens (start)"
+            type="datetime-local"
+            value={editForm.start_date}
+            onChange={(e) => setEditForm((p) => ({ ...p, start_date: e.target.value }))}
+            fullWidth
+          />
+          <Input
+            label="Deadline (end)"
+            type="datetime-local"
+            value={editForm.end_date}
+            onChange={(e) => setEditForm((p) => ({ ...p, end_date: e.target.value }))}
+            fullWidth
+          />
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              fontSize: "0.82rem",
+              color: "rgba(255,255,255,0.7)",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={editForm.reopen}
+              onChange={(e) => setEditForm((p) => ({ ...p, reopen: e.target.checked }))}
+              style={{ accentColor: "#e8503a" }}
+            />
+            Reopen teams disqualified for missing this deadline
+          </label>
+          <div style={{ display: "flex", gap: "0.75rem", paddingTop: "0.5rem" }}>
+            <Button type="button" variant="secondary" onClick={() => setEditRound(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={savingWindow} style={{ flex: 1 }}>
+              Save Deadline
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal
         open={modalOpen}

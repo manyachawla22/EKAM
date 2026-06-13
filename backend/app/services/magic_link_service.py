@@ -7,6 +7,7 @@ and verifies them on click-through.
 
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,9 +25,14 @@ async def generate_magic_link(
     owner_id: str,
     owner_type: str,
     event_id: str | None = None,
+    redirect_path: str | None = None,
 ) -> str:
     """
     Generate a magic link token, store it in AuthToken, and return the full URL.
+
+    `redirect_path` (e.g. "/judge/anomalies") is appended as a `next` param so the
+    portal-login page can send the user straight to a specific page after
+    authenticating, instead of the default role dashboard.
     """
 
     token_value = secrets.token_urlsafe(48)
@@ -51,6 +57,9 @@ async def generate_magic_link(
 
     if event_id:
         link += f"&event_id={event_id}"
+
+    if redirect_path:
+        link += f"&next={quote(redirect_path, safe='')}"
 
     return link
 

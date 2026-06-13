@@ -319,8 +319,13 @@ async def _create_live_anomaly_notification(
 
     await db.commit()
 
+    event_name = event.name if event else "your event"
+
     # Notify the organizer (in-app) — keeps the existing oversight behaviour.
     if event and event.organizer_id:
+        organizer_link = (
+            f"{settings.FRONTEND_URL.rstrip('/')}/organizer/events/{event_id}/anomalies"
+        )
         await create_notification(
             db=db,
             event_id=str(event_id),
@@ -328,14 +333,59 @@ async def _create_live_anomaly_notification(
             title="ML Score Anomaly Detected",
             message=description,
             notification_type=NotificationType.alert,
+            action_link=organizer_link,
         )
 
+        # Organizer report email — a proper write-up of the flagged evaluation,
+        # not just an in-app ping. Organizers authenticate via Firebase, so this
+        # is a plain link to the anomalies dashboard (no magic link needed).
+        # Fetch the organizer's email explicitly (async: don't touch the lazy
+        # `event.organizer` relationship).
+        from app.models.user import User
+
+        organizer = (
+            await db.execute(select(User).where(User.id == event.organizer_id))
+        ).scalars().first()
+        organizer_email = getattr(organizer, "email", None) if organizer else None
+        if organizer_email:
+            judge_label = (judge.name or judge.email) if judge else "a judge"
+            o_subject = f"[EKAM] Scoring anomaly flagged — {event_name}"
+            o_text = (
+                f"An automated scoring review (IsolationForest) flagged an "
+                f"evaluation by {judge_label} for \"{event_name}\".\n\n"
+                f"  Score:         {anomaly_payload['score']:.1f}\n"
+                f"  Panel average: {anomaly_payload['panel_average']:.1f}\n"
+                f"  Judge average: {anomaly_payload['judge_average']:.1f}\n\n"
+                f"Results for the affected submission are held pending review.\n"
+                f"Review all anomalies here:\n  {organizer_link}\n\n"
+                f"Team EKAM"
+            )
+            o_html = (
+                f"<p>An automated scoring review (IsolationForest) flagged an "
+                f"evaluation by <strong>{judge_label}</strong> for "
+                f"<strong>{event_name}</strong>.</p>"
+                f"<ul>"
+                f"<li><strong>Score:</strong> {anomaly_payload['score']:.1f}</li>"
+                f"<li><strong>Panel average:</strong> {anomaly_payload['panel_average']:.1f}</li>"
+                f"<li><strong>Judge average:</strong> {anomaly_payload['judge_average']:.1f}</li>"
+                f"</ul>"
+                f"<p>Results for the affected submission are held pending review.</p>"
+                f"<p><a href=\"{organizer_link}\">Review all anomalies</a></p>"
+                f"<p>Team EKAM</p>"
+            )
+            await send_direct_email(
+                to=organizer_email,
+                subject=o_subject,
+                body_html=o_html,
+                body_text=o_text,
+            )
+
     # Notify the judge (in-app + email) so they can re-check and modify scores.
+    # The link points to the judge's PRIVATE anomalies page, where they can fix
+    # all evaluations flagged for them — accessible only to them (server-enforced).
     if judge:
-        submission_id = anomaly_payload["submission_id"]
-        review_link = (
-            f"{settings.FRONTEND_URL.rstrip('/')}/judge/evaluate/{submission_id}"
-        )
+        # In-app link: judge is already authenticated, so a plain internal path.
+        judge_page = "/judge/anomalies"
 
         await create_notification(
             db=db,
@@ -344,15 +394,31 @@ async def _create_live_anomaly_notification(
             title="Please review a flagged evaluation",
             message=(
                 "One of your evaluations was flagged as a possible scoring "
-                "anomaly. Please review and update the score if needed."
+                "anomaly. Open your anomalies page to review and fix it."
             ),
             notification_type=NotificationType.action_required,
-            action_link=review_link,
+            action_link=judge_page,
         )
 
         if getattr(judge, "email", None):
-            event_name = event.name if event else "your event"
             judge_name = judge.name or judge.email.split("@")[0]
+
+            # Email link: a one-click magic link that lands them straight on
+            # their private anomalies page (no OTP). Best-effort — fall back to a
+            # plain path if link generation fails.
+            try:
+                from app.services.magic_link_service import generate_magic_link
+
+                review_link = await generate_magic_link(
+                    db,
+                    str(judge.id),
+                    "judge",
+                    str(event_id),
+                    redirect_path=judge_page,
+                )
+            except Exception as exc:
+                print(f"[anomaly] judge magic link failed: {exc}")
+                review_link = f"{settings.FRONTEND_URL.rstrip('/')}{judge_page}"
 
             subject = f"[EKAM] Scoring anomaly flagged — {event_name}"
             body_text = (
@@ -363,8 +429,8 @@ async def _create_live_anomaly_notification(
                 f"  Your score:    {anomaly_payload['score']:.1f}\n"
                 f"  Panel average: {anomaly_payload['panel_average']:.1f}\n"
                 f"  Your average:  {anomaly_payload['judge_average']:.1f}\n\n"
-                f"This does not mean the score is wrong — please review the "
-                f"submission and update your score if appropriate:\n\n"
+                f"This does not mean the score is wrong — open your anomalies "
+                f"page (one-click login) to review and fix any flagged scores:\n\n"
                 f"  {review_link}\n\n"
                 f"Thank you,\nTeam EKAM"
             )
@@ -378,9 +444,9 @@ async def _create_live_anomaly_notification(
                 f"<li><strong>Panel average:</strong> {anomaly_payload['panel_average']:.1f}</li>"
                 f"<li><strong>Your average:</strong> {anomaly_payload['judge_average']:.1f}</li>"
                 f"</ul>"
-                f"<p>This does not mean the score is wrong — please review the "
-                f"submission and update your score if appropriate:</p>"
-                f"<p><a href=\"{review_link}\">Review this evaluation</a></p>"
+                f"<p>This does not mean the score is wrong — open your anomalies "
+                f"page to review and fix any flagged scores:</p>"
+                f"<p><a href=\"{review_link}\">Review my flagged evaluations</a></p>"
                 f"<p>Thank you,<br/>Team EKAM</p>"
             )
 
@@ -390,6 +456,28 @@ async def _create_live_anomaly_notification(
                 body_html=body_html,
                 body_text=body_text,
             )
+
+    # Push a live "anomaly" signal to the organizer and the flagged judge so the
+    # anomalies views refresh instantly (SSE). Best-effort.
+    try:
+        from app.services.event_bus import safe_publish
+
+        targets = []
+        if event and event.organizer_id:
+            targets.append(str(event.organizer_id))
+        if judge:
+            targets.append(str(judge.id))
+        if targets:
+            await safe_publish(
+                targets,
+                {
+                    "type": "anomaly",
+                    "event_id": str(event_id),
+                    "anomaly_id": str(anomaly.id),
+                },
+            )
+    except Exception as exc:
+        print(f"[anomaly_service] anomaly signal failed: {exc}")
 
     return anomaly
 

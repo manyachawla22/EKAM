@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut, LayoutDashboard, Zap } from "lucide-react";
+import { LogOut, LayoutDashboard, Zap, ShieldAlert } from "lucide-react";
 import { signOut, auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import Button from "@/components/ui/Button";
@@ -72,6 +72,16 @@ export default function Navbar() {
 
               {/* Notifications */}
               <NotificationsBell />
+
+              {/* Judge-only: private flagged-evaluations page */}
+              {profile.role === "judge" && (
+                <Link href="/judge/anomalies">
+                  <Button variant="ghost" size="sm">
+                    <ShieldAlert className="h-4 w-4" />
+                    <span className="hidden sm:inline">Anomalies</span>
+                  </Button>
+                </Link>
+              )}
 
               {/* Dashboard link */}
               <Link href={getRoleDashboard(profile.role)}>
