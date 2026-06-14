@@ -22,7 +22,8 @@ from app.services.email_service import (
     draft_email,
     draft_bulk_emails,
     list_drafts,
-    send_email
+    send_email,
+    resend_failed_emails
 )
 from app.models.email import EmailDraft
 from sqlalchemy.future import select
@@ -47,6 +48,21 @@ async def get_email_drafts(
 ):
     """List all email drafts for a given event."""
     return await list_drafts(db, event_id)
+
+
+@router.post(
+    "/{event_id}/resend-failed",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def resend_failed(
+    event_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Retry all previously-failed email drafts for this event (throttled)."""
+    return await resend_failed_emails(db, event_id)
 
 
 @router.post(

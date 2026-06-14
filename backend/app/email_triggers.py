@@ -647,13 +647,19 @@ async def on_certificate_distribution(
     db: AsyncSession,
     requested_by: str,
     achievement: str = "Participation",
+    exclude_emails: set[str] | None = None,
 ):
     """
     Generate and directly email certificates to eligible participants.
 
+    `exclude_emails` (lowercased) are skipped — used so winners, who already get a
+    winner certificate, don't also receive a participation certificate.
+
     This intentionally does not replace existing approval-based email drafting.
     It only runs when trigger_stage_emails calls it.
     """
+    exclude = {e.strip().lower() for e in (exclude_emails or set()) if e}
+
     participant_result = await db.execute(
         select(Participant).where(
             Participant.event_id == event.id,
@@ -673,6 +679,11 @@ async def on_certificate_distribution(
         participant_email = getattr(participant, "email", None)
 
         if not participant_email:
+            skipped_count += 1
+            continue
+
+        if participant_email.strip().lower() in exclude:
+            # Winner — already received a winner certificate; don't double up.
             skipped_count += 1
             continue
 

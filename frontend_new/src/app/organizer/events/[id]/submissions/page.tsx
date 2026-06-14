@@ -235,17 +235,8 @@ export default function SubmissionsPage() {
                     ? new Date(s.submitted_at).toLocaleDateString()
                     : "—"}
                 </span>
-                <a
-                  href={`/judge/evaluate/${s.id}`}
-                  style={{
-                    fontSize: "0.75rem",
-                    fontWeight: 500,
-                    color: "#e8503a",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  Evaluate →
-                </a>
+                {/* Evaluation is a judge action — organizers don't evaluate, so
+                    no Evaluate link here (it lives in the judge portal). */}
                 {s.attachments && s.attachments.length > 0 && (
                   <a
                     href={s.attachments[0]}

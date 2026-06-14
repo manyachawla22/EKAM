@@ -183,6 +183,7 @@ def _build_participant(event: EventModel, answers: dict, resume_url: str) -> Par
         email=str(email),
         institution=identity.get("institution"),
         phone=identity.get("phone"),
+        gender=identity.get("gender"),
         skills=identity.get("skills") or [],
         registration_data=answers,
         resume_url=resume_url,

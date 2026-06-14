@@ -40,7 +40,12 @@ export default function ApprovalEditor({ eventId, approval, teams, judges, parti
   const [saving, setSaving] = useState(false);
   const [board, setBoard] = useState<Submission[]>([]);
 
-  useEffect(() => setPayload(approval.payload || {}), [approval]);
+  // Reset the editor only when a DIFFERENT approval is opened — NOT on every
+  // background refetch of the same approval. Live SSE updates change the parent's
+  // approval object reference frequently; depending on `approval` here would wipe
+  // the organizer's in-progress edits (e.g. team moves) mid-edit (#8).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setPayload(approval.payload || {}), [approval.id]);
 
   const teamName = useMemo(() => {
     const m = new Map(teams.map((t) => [t.id, t.name]));

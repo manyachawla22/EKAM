@@ -41,7 +41,10 @@ function severityLabel(s: number): { label: string; color: string } {
  * ever show the caller their own anomalies.
  */
 export default function MyAnomaliesPage() {
-  const { user, loading: authLoading } = useAuth();
+  // Judges authenticate via magic link / OTP → EKAM JWT, so they have a `profile`
+  // but never a Firebase `user`. Gate on `profile` (like every other judge page);
+  // gating on `user` would always read null and wrongly show the login prompt.
+  const { profile, loading: authLoading } = useAuth();
   const [items, setItems] = useState<MyAnomaly[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"open" | "resolved" | "all">("open");
@@ -72,12 +75,12 @@ export default function MyAnomaliesPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!profile) {
       setLoading(false);
       return;
     }
     fetchAll();
-  }, [authLoading, user, fetchAll]);
+  }, [authLoading, profile, fetchAll]);
 
   // Live push: refetch when a new anomaly is flagged for this judge.
   useEventStream(["anomaly"], fetchAll);
@@ -167,7 +170,7 @@ export default function MyAnomaliesPage() {
 
         {loading ? (
           <div className="shimmer" style={{ height: "12rem", borderRadius: "0.75rem" }} />
-        ) : !user ? (
+        ) : !profile ? (
           <div style={{ ...card, textAlign: "center", color: "rgba(255,255,255,0.5)" }}>
             Please log in as a judge to view your flagged evaluations.
           </div>

@@ -19,7 +19,7 @@ export default function DynamicField({ field, value, prefilled, onChange }: Prop
 
   return (
     <div>
-      <label className="mb-1.5 flex items-center gap-2 text-sm font-medium text-white/80">
+      <label className="mb-1.5 flex flex-wrap items-center gap-2 text-sm font-medium text-white/80">
         {field.label}
         {field.required && <span className="text-[#e8503a]">*</span>}
         {prefilled && (

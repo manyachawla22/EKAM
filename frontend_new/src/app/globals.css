@@ -26,10 +26,13 @@
   --text-dim: #555555;
 }
 
+/* NOTE: do NOT add `padding: 0; margin: 0` here. This `*` rule is UNLAYERED, so
+   in Tailwind v4 it overrides every layered spacing utility (pt-*, mx-*, mt-*,
+   gap-*) regardless of specificity — which silently collapsed the Tailwind-based
+   register pages to the top-left, under the navbar (#1). Tailwind's preflight
+   already resets margins/padding within @layer base. */
 * {
   box-sizing: border-box;
-  padding: 0;
-  margin: 0;
 }
 
 html,

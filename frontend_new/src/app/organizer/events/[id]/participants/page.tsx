@@ -236,7 +236,7 @@ export default function ParticipantsPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto",
               gap: "1rem",
               borderBottom: "1px solid #222",
               padding: "0.75rem 1.25rem",
@@ -249,6 +249,7 @@ export default function ParticipantsPage() {
           >
             <span>Participant</span>
             <span>Institution</span>
+            <span>Gender</span>
             <span>Skills</span>
             <span>Joined</span>
             <span />
@@ -261,7 +262,7 @@ export default function ParticipantsPage() {
               transition={{ delay: i * 0.03 }}
               style={{
                 display: "grid",
-                gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
+                gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto",
                 gap: "1rem",
                 alignItems: "center",
                 borderBottom: i === filtered.length - 1 ? "none" : "1px solid rgba(34,34,34,0.5)",
@@ -312,6 +313,17 @@ export default function ParticipantsPage() {
                 }}
               >
                 {p.institution || "—"}
+              </span>
+              <span
+                style={{
+                  fontSize: "0.875rem",
+                  color: "rgba(255,255,255,0.6)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {p.gender || "—"}
               </span>
               <span
                 style={{

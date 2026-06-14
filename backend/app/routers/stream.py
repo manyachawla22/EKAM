@@ -16,12 +16,11 @@ tokens. The token is validated identically to every other request.
 import asyncio
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal
 from app.core.security import (
     _verify_ekam_jwt,
     _verify_firebase_token,
@@ -80,13 +79,21 @@ async def _event_generator(request: Request, queue: asyncio.Queue, user_id: str)
 async def stream(
     request: Request,
     token: str = Query(..., description="EKAM JWT or Firebase ID token"),
-    db: AsyncSession = Depends(get_db),
 ):
     # Authenticate the same way every other endpoint does, then resolve the
     # actor so we subscribe under the exact id used as a publish target.
+    #
+    # IMPORTANT: do NOT use `Depends(get_db)` here. That session would stay open
+    # for the entire lifetime of this long-lived SSE connection, pinning one
+    # pooled DB connection per open EventSource and quickly exhausting the pool
+    # (every other request then blocks waiting for a connection). The stream only
+    # needs the DB for this initial auth — the generator below is pure in-memory
+    # queue work — so we use a short-lived session and release its connection
+    # back to the pool *before* streaming begins.
     token_data = _verify_raw_token(token)
-    auth = await get_current_actor(token_data=token_data, db=db)
-    user_id = str(auth.actor_id)
+    async with AsyncSessionLocal() as db:
+        auth = await get_current_actor(token_data=token_data, db=db)
+        user_id = str(auth.actor_id)
 
     queue = bus.subscribe(user_id)
 

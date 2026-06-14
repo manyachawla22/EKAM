@@ -349,29 +349,63 @@ async def send_authenticated_email(
     )
 
 
+# Resend's free tier allows ~2 requests/second. Space out batch sends so a burst
+# of drafts doesn't trip a 429. Only the Resend call counts against the limit.
+_SEND_THROTTLE_SECONDS = 0.6
+
+
 async def send_email(
     db: AsyncSession,
     email_draft: EmailDraft,
 ) -> bool:
     """
-    Attempts to send a drafted email and updates its status.
-    Returns True on success, False on failure (never raises).
+    Renders a per-recipient one-click login link into the draft body (best-effort)
+    and sends it via Resend, updating the draft's status. Returns True on success,
+    False on failure (never raises).
+
+    The rendered body is NOT persisted — the stored body keeps its {{magic_link}}
+    placeholder so a later retry mints a *fresh* single-use link instead of reusing
+    one that may already be consumed or expired. On failure the Resend error text is
+    recorded on `email_draft.last_error` so the cause is visible from the DB.
     """
+    # Mint a fresh per-recipient magic link at send time. Per-recipient is required:
+    # a shared link would authenticate everyone as the same person. Best-effort —
+    # if the recipient isn't a participant/judge of the event (or generation fails),
+    # the email still goes out, just without an auto-login link.
+    try:
+        link = await magic_link_for_recipient(
+            db, email_draft.event_id, email_draft.recipient_email
+        )
+    except Exception as exc:
+        print(f"[email_service] magic link generation failed for {email_draft.recipient_email}: {exc}")
+        link = None
+
+    body_html = email_draft.body_html
+    body_text = email_draft.body_text
+    if link:
+        body_html = _inject_magic_link(body_html, link, is_html=True) if body_html else body_html
+        body_text = _inject_magic_link(body_text, link, is_html=False) if body_text else body_text
+        if not body_html and not body_text:
+            body_text = _inject_magic_link(None, link, is_html=False)
+
     try:
         await _send_via_resend(
             recipient=email_draft.recipient_email,
             subject=email_draft.subject,
-            body=email_draft.body_html or email_draft.body_text or "",
+            body=body_html or body_text or "",
             email_type=email_draft.email_type.value,
-            is_html=bool(email_draft.body_html),
+            is_html=bool(body_html),
         )
         email_draft.status = EmailStatus.sent
         email_draft.sent_at = datetime.now(timezone.utc)
+        email_draft.last_error = None
         await db.commit()
         return True
     except Exception as exc:
-        print(f"[email_service] FAILED to send to {email_draft.recipient_email}: {exc}")
+        msg = str(exc)
+        print(f"[email_service] FAILED to send to {email_draft.recipient_email}: {msg}")
         email_draft.status = EmailStatus.failed
+        email_draft.last_error = msg[:1000]
         await db.commit()
         return False
 
@@ -509,9 +543,13 @@ async def draft_bulk_emails(
     payload = {
         "email_type": email_type.value,
         "subject": subject,
+        # Include the body so the organizer can see (and edit) what the batch says
+        # in the approval panel. execute_approved_email_batch applies any edits.
+        "body_text": body_text or "",
+        "body_html": body_html or "",
         "recipient_count": len(recipients)
     }
-    
+
     approval = await create_approval_request(
         db=db,
         event_id=event_id,
@@ -544,44 +582,81 @@ async def execute_approved_email_batch(
     approval_id: str
 ):
     """
-    Executed by the Approval Service when an email batch is approved.
-    Fetches all linked drafts, marks them as approved, and sends them.
+    Executed by the Approval Service when an email batch is approved. Fetches the
+    linked drafts and sends them, throttled to respect Resend's rate limit.
+
+    Re-running picks up drafts that previously FAILED as well as those still
+    pending_approval, so re-approving a batch retries its failures. send_email()
+    injects the per-recipient login link, records status/last_error, and commits.
     """
     result = await db.execute(
         select(EmailDraft).where(
             EmailDraft.approval_id == approval_id,
-            EmailDraft.status == EmailStatus.pending_approval
+            EmailDraft.status.in_([EmailStatus.pending_approval, EmailStatus.failed]),
         )
     )
     drafts = result.scalars().all()
 
-    sent_count = 0
+    # Apply any edits the organizer made to the subject/body in the approval panel
+    # (stored on the approval payload) onto the drafts before sending, so the
+    # editable preview is truthful rather than cosmetic.
+    from app.models.approval import ApprovalRequest
+
+    approval = (
+        await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id))
+    ).scalars().first()
+    payload = (approval.payload if approval else None) or {}
+    edited_subject = payload.get("subject")
+    edited_text = payload.get("body_text")
+    edited_html = payload.get("body_html")
     for draft in drafts:
-        # Mint a per-recipient one-click login link and inject it into the body
-        # right before sending. Generation MUST be per recipient — a shared link
-        # would authenticate everyone as the same person. Best-effort: if the
-        # recipient isn't a participant/judge of the event (or generation
-        # fails), the email still goes out, just without an auto-login link.
-        try:
-            link = await magic_link_for_recipient(db, draft.event_id, draft.recipient_email)
-        except Exception as exc:
-            print(f"[email_service] magic link generation failed for {draft.recipient_email}: {exc}")
-            link = None
+        if edited_subject:
+            draft.subject = edited_subject
+        # Empty string is a valid "no HTML body" — only override when the key is
+        # present, but treat missing keys as "leave the draft as-is".
+        if edited_text is not None:
+            draft.body_text = edited_text
+        if edited_html is not None:
+            draft.body_html = edited_html
+    if drafts:
+        await db.commit()
 
-        if link:
-            if draft.body_html:
-                draft.body_html = _inject_magic_link(draft.body_html, link, is_html=True)
-            if draft.body_text:
-                draft.body_text = _inject_magic_link(draft.body_text, link, is_html=False)
-            if not draft.body_html and not draft.body_text:
-                draft.body_text = _inject_magic_link(None, link, is_html=False)
-
-        # send_email() handles status update to sent/failed and commits internally
-        success = await send_email(db, draft)
-        if success:
+    sent_count = 0
+    for i, draft in enumerate(drafts):
+        if i > 0:
+            await asyncio.sleep(_SEND_THROTTLE_SECONDS)
+        if await send_email(db, draft):
             sent_count += 1
 
     return sent_count
+
+
+async def resend_failed_emails(
+    db: AsyncSession,
+    event_id: str,
+) -> dict:
+    """Retry every draft for an event that previously failed to send, throttled to
+    respect Resend's rate limit. Returns attempt/sent/failed counts for the caller."""
+    result = await db.execute(
+        select(EmailDraft).where(
+            EmailDraft.event_id == event_id,
+            EmailDraft.status == EmailStatus.failed,
+        ).order_by(EmailDraft.created_at)
+    )
+    drafts = result.scalars().all()
+
+    sent_count = 0
+    for i, draft in enumerate(drafts):
+        if i > 0:
+            await asyncio.sleep(_SEND_THROTTLE_SECONDS)
+        if await send_email(db, draft):
+            sent_count += 1
+
+    return {
+        "attempted": len(drafts),
+        "sent": sent_count,
+        "failed": len(drafts) - sent_count,
+    }
 
 
 async def list_drafts(

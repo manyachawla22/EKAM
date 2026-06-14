@@ -10,6 +10,7 @@ import groq as _groq
 from groq import Groq
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -194,12 +195,13 @@ OUTPUT SCHEMA:
   ],
   "judging_panel": {
     "judges": [
-      {"judge_id":"judge_1","name":"Actual Name Only","company":"Company","expertise":["AI"]}
+      {"judge_id":"judge_1","name":"Actual Name Only","company":"Company","email":"judge@example.com","expertise":["AI"]}
     ]
   }
 }
 CRITICAL: Only populate judges if the organizer gives REAL names (e.g. "Akshat Sharma from Google").
-If the message only mentions a count ("3 judges") or companies without names, omit judging_panel entirely — do NOT create placeholder entries like "Judge 1"."""
+If the message only mentions a count ("3 judges") or companies without names, omit judging_panel entirely — do NOT create placeholder entries like "Judge 1".
+ALWAYS capture each judge's "email" when an address is present, regardless of the order it appears in (e.g. "Aarav Mehta, AI/ML, aarav@x.com" → email "aarav@x.com"). The email is required to send the judge their login link."""
 
 
 def _sec3_system() -> str:
@@ -253,7 +255,8 @@ Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"
 Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
 Field: teams → reply "50 teams 4 each, up to 200 participants" → {{"participants":{{"capacity":{{"max_teams":50,"max_participants":200}},"team":{{"min_size":4,"max_size":4}}}}}}
   (Always capture max_participants when a total participant/registration cap is given, e.g. "max 2 participants" → capacity.max_participants = 2. If only team count and size are given, you may compute max_participants = max_teams × max_size.)
-Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
+Field: judges → reply "Aarav Mehta from Google, AI expert, aarav@google.com" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","email":"aarav@google.com","expertise":["AI"]}}]}}}}
+  Capture "email" whenever an address appears, in ANY field order (name/expertise/email). Omit email only if none is given.
 Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
 Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
 {{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
@@ -659,9 +662,12 @@ def _enrich_config(config: dict) -> dict:
         {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
         {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
         {"field_id": "phone", "label": "WhatsApp Number", "type": "tel", "required": True},
+        {"field_id": "gender", "label": "Gender", "type": "select", "required": True,
+         "options": ["Male", "Female", "Other", "Prefer not to say"]},
         {"field_id": "college", "label": "College/University", "type": "text", "required": True},
         {"field_id": "year_of_study", "label": "Year of Study", "type": "select", "required": True,
          "options": ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "PG", "PhD"]},
+        {"field_id": "skills", "label": "Skills (comma-separated)", "type": "text", "required": True},
         {"field_id": "branch", "label": "Branch/Specialization", "type": "text", "required": False},
         {"field_id": "linkedin_url", "label": "LinkedIn Profile", "type": "url", "required": False},
     ])
@@ -1149,17 +1155,28 @@ async def _materialize_rounds_judges_rubric(
             db.add_all(rows)
     await db.commit()
 
-    # ── Judges (only those with a usable email) ──
+    # ── Judges (those with a usable email) ──
+    # The #5 fix is in extraction: the AI now captures each judge's `email`
+    # regardless of field order, so judges no longer silently vanish here.
+    # Judge.email is NOT NULL + unique per event, so email-less judges can't be
+    # rows yet (listing them needs a nullable-email migration — see correction.md).
     judges_cfg = ((config.get("judging_panel") or {}).get("judges")) or []
+    seen_emails: set[str] = set()
     for j in judges_cfg:
-        email = str(j.get("email") or "").strip()
-        if not email or "@" not in email:
+        if not isinstance(j, dict):
             continue
+        email = str(j.get("email") or "").strip()
+        if "@" not in email:
+            continue
+        key = email.lower()
+        if key in seen_emails:
+            continue
+        seen_emails.add(key)
         existing = (
             await db.execute(
                 select(JudgeModel).where(
                     JudgeModel.event_id == event.id,
-                    JudgeModel.email == email,
+                    func.lower(JudgeModel.email) == key,
                 )
             )
         ).scalars().first()
