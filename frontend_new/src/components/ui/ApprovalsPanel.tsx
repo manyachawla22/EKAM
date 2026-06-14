@@ -21,6 +21,7 @@ const LABEL: Record<ApprovalRequestType, string> = {
   progression: "Progression",
   registration_form: "Registration Form",
   event_deploy: "Event Deployment",
+  anomaly_review: "Scoring Anomaly",
 };
 
 const DESCRIPTION: Record<ApprovalRequestType, string> = {
@@ -32,6 +33,7 @@ const DESCRIPTION: Record<ApprovalRequestType, string> = {
   progression: "A progression proposal is pending review.",
   registration_form: "A public registration form is ready. Approve to publish it.",
   event_deploy: "An AI-designed event is ready. Approve to publish the event and its registration form.",
+  anomaly_review: "A scoring anomaly was flagged. Approve to ask the judge to review it, or reject to dismiss.",
 };
 
 interface Props {

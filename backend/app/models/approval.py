@@ -29,6 +29,11 @@ class RequestType(str, enum.Enum):
     # Publishing an AI-designed event (gated deploy). On approval the executor
     # flips the draft event to active and materializes rounds/judges/rubric.
     event_deploy = "event_deploy"
+    # Reviewing a flagged scoring anomaly (#2). The organizer decides whether the
+    # anomaly is worth considering BEFORE the judge is notified. On approval the
+    # executor emails the judge + organizer and reveals it on the judge's page;
+    # on rejection it's dismissed and never shown to the judge.
+    anomaly_review = "anomaly_review"
 
 
 class ApprovalStatus(str, enum.Enum):

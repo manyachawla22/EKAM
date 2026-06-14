@@ -642,6 +642,44 @@ async def on_results_approved(
     )
 
 
+async def _winning_team_emails(db: AsyncSession, event_id) -> set[str]:
+    """Lowercased emails of every member of every winning team, read from the
+    latest persisted "winners" report. Used to keep winners (who already get a
+    winner certificate) out of the participation-certificate distribution,
+    regardless of which code path triggers that distribution."""
+    from app.models.report import Report as ReportModel
+    from app.models.participant import Participant as ParticipantModel
+    from app.models.team import TeamMember as TeamMemberModel
+    from sqlalchemy import desc
+
+    report = (
+        await db.execute(
+            select(ReportModel)
+            .where(ReportModel.event_id == event_id, ReportModel.type == "winners")
+            .order_by(desc(ReportModel.created_at))
+        )
+    ).scalars().first()
+    if not report:
+        return set()
+
+    team_ids = [
+        w.get("team_id")
+        for w in (report.data or {}).get("winners", [])
+        if w.get("team_id")
+    ]
+    if not team_ids:
+        return set()
+
+    rows = (
+        await db.execute(
+            select(ParticipantModel.email)
+            .join(TeamMemberModel, TeamMemberModel.participant_id == ParticipantModel.id)
+            .where(TeamMemberModel.team_id.in_(team_ids))
+        )
+    ).all()
+    return {r[0].strip().lower() for r in rows if r[0]}
+
+
 async def on_certificate_distribution(
     event: Event,
     db: AsyncSession,
@@ -653,11 +691,18 @@ async def on_certificate_distribution(
     Generate and directly email certificates to eligible participants.
 
     `exclude_emails` (lowercased) are skipped — used so winners, who already get a
-    winner certificate, don't also receive a participation certificate.
+    winner certificate, don't also receive a participation certificate. When the
+    caller doesn't pass an explicit set AND this is a participation distribution,
+    we self-compute the winning-team members from the latest winners report so a
+    winner is NEVER double-certified, no matter which path triggered us (the
+    legacy stage-email path passes nothing — that was the #1 gap).
 
     This intentionally does not replace existing approval-based email drafting.
     It only runs when trigger_stage_emails calls it.
     """
+    if exclude_emails is None and achievement.strip().lower() == "participation":
+        exclude_emails = await _winning_team_emails(db, event.id)
+
     exclude = {e.strip().lower() for e in (exclude_emails or set()) if e}
 
     participant_result = await db.execute(

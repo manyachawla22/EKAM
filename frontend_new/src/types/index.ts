@@ -219,7 +219,8 @@ export type ApprovalRequestType =
   | "stage_transition"
   | "progression"
   | "registration_form"
-  | "event_deploy";
+  | "event_deploy"
+  | "anomaly_review";
 
 export type ApprovalStatus =
   | "draft"
@@ -293,6 +294,9 @@ export interface Anomaly {
   anomaly_type: AnomalyType;
   severity: number; // 0.0 - 1.0
   description: string;
+  // Organizer-approval gate (#2): pending = awaiting organizer; approved =
+  // considered (judge notified); rejected = dismissed.
+  review_status?: "pending" | "approved" | "rejected";
   is_resolved: boolean;
   resolved_by?: string | null;
   resolved_at?: string | null;

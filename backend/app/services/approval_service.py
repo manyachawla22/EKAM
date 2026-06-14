@@ -190,6 +190,14 @@ async def review_approval(
 
     if action == ApprovalStatus.approved:
         await execute_approved_action(db, approval)
+    elif action == ApprovalStatus.rejected and approval.request_type == RequestType.anomaly_review:
+        # Rejecting an anomaly review = "not worth considering": dismiss it so it
+        # never reaches the judge and the organizer's glow clears (#2/#4).
+        from app.services.ml_anomaly_report_service import dispatch_anomaly_review
+
+        anomaly_id = (approval.payload or {}).get("anomaly_id")
+        if anomaly_id:
+            await dispatch_anomaly_review(db, str(anomaly_id), approved=False)
 
     # Signal the organizer's other open views that the pending list changed
     # (the badge/panel should refresh). Pipeline-affecting executions publish
@@ -238,6 +246,15 @@ async def execute_approved_action(
 
     elif approval.request_type == RequestType.event_deploy:
         await _execute_event_deploy(db, approval)
+
+    elif approval.request_type == RequestType.anomaly_review:
+        # Organizer confirmed the anomaly is worth considering (#2): now (and
+        # only now) notify the judge + organizer and reveal it on the judge page.
+        from app.services.ml_anomaly_report_service import dispatch_anomaly_review
+
+        anomaly_id = (approval.payload or {}).get("anomaly_id")
+        if anomaly_id:
+            await dispatch_anomaly_review(db, str(anomaly_id), approved=True)
 
     else:
         raise HTTPException(

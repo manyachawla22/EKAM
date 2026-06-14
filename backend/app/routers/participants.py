@@ -6,6 +6,7 @@ from uuid import UUID
 from typing import List
 
 from fastapi import APIRouter, Depends, status, UploadFile, File, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -25,12 +26,45 @@ from app.services.participant_service import (
     register_participant_service,
     list_participants_service
 )
-from app.services.csv_service import parse_participant_csv, bulk_insert_participants
+from app.services.csv_service import (
+    parse_participant_csv,
+    bulk_insert_participants,
+    generate_participant_sample_csv,
+)
 
 router = APIRouter(
     prefix="/participants",
     tags=["Participants"]
 )
+
+
+@router.get(
+    "/{event_id}/sample-csv",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id"))
+    ]
+)
+async def download_participant_sample_csv(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download a CSV template tailored to THIS event's registration fields (#3),
+    so the organizer fills exactly what the event needs and the importer maps it."""
+    event = (
+        await db.execute(select(EventModel).where(EventModel.id == event_id))
+    ).scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    csv_text = generate_participant_sample_csv(event)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="participants_sample.csv"'
+        },
+    )
 
 
 @router.post(
