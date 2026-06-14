@@ -41,7 +41,7 @@ def _match(field: dict, *needles: str) -> bool:
 def extract_identity(form_fields: list[dict] | None, answers: dict[str, Any]) -> dict[str, Any]:
     """Best-effort map of the dynamic answers onto known Participant columns.
 
-    Returns a dict with any of: name, email, phone, institution, skills.
+    Returns a dict with any of: name, email, phone, institution, gender, skills.
     Falls back to common field_ids when the form is the default set.
     """
     out: dict[str, Any] = {}
@@ -66,6 +66,8 @@ def extract_identity(form_fields: list[dict] | None, answers: dict[str, Any]) ->
             out["phone"] = val
         elif "institution" not in out and _match(f, "college", "university", "institut", "organization", "organisation", "school"):
             out["institution"] = val
+        elif "gender" not in out and _match(f, "gender", "sex"):
+            out["gender"] = val
         elif _match(f, "skill", "tech", "stack"):
             if isinstance(val, list):
                 out["skills"] = [str(s) for s in val]
@@ -77,6 +79,7 @@ def extract_identity(form_fields: list[dict] | None, answers: dict[str, Any]) ->
     out.setdefault("name", answers.get("full_name") or answers.get("name"))
     out.setdefault("phone", answers.get("phone"))
     out.setdefault("institution", answers.get("college") or answers.get("institution"))
+    out.setdefault("gender", answers.get("gender"))
 
     # Drop None values.
     return {k: v for k, v in out.items() if v not in (None, "", [])}

@@ -51,6 +51,7 @@ def parse_participant_csv(file_content: bytes) -> List[Dict[str, Any]]:
                 "name": name,
                 "email": email,
                 "organization": row.get("organization") or row.get("institution"),
+                "gender": row.get("gender") or None,
                 # We extract generic properties that could map to custom logic later
                 "skills": skills,
             })
@@ -138,6 +139,7 @@ async def bulk_insert_participants(
             name=data["name"],
             email=email,
             institution=data.get("organization"),  # CSV uses 'organization', model uses 'institution'
+            gender=data.get("gender"),
             skills=data.get("skills") or [],
         ))
         inserted += 1

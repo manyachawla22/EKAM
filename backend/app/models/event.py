@@ -5,6 +5,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    Float,
     DateTime,
     ForeignKey,
     Enum,
@@ -177,6 +178,11 @@ class Round(Base):
     start_date = Column(DateTime(timezone=True), nullable=True)
 
     end_date = Column(DateTime(timezone=True), nullable=True)
+
+    # Single source of truth for this round's advancement cutoff (#13). It is set
+    # only when the advancement is executed (the approval is the only editor);
+    # leaderboard / pipeline / approvals views read it read-only. Null until then.
+    cutoff_score = Column(Float, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),

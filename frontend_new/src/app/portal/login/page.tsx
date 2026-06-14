@@ -7,7 +7,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Zap, CheckCircle, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import { verifyMagicLink, getMe, getRoleDashboard } from "@/lib/api";
+import { verifyMagicLink, getMe, getRoleDashboard, setSessionKind } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import ParticleBackground from "@/components/landing/ParticleBackground";
 import Link from "next/link";
 
@@ -16,6 +17,7 @@ type Status = "verifying" | "success" | "error";
 export default function PortalLoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { refreshProfile } = useAuth();
   const [status, setStatus] = useState<Status>("verifying");
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -28,27 +30,46 @@ export default function PortalLoginPage() {
       return;
     }
 
+    // A magic link inherently means "this tab is a participant/judge session".
+    // Claim that synchronously, before any await, so the shared-Firebase auth
+    // listener (which fires on mount with the organizer's user in a shared
+    // browser) can't race in and hijack this tab via syncProfile→loginUser.
+    setSessionKind("ekam");
+
     const verify = async () => {
       try {
         await verifyMagicLink(token);
         // EKAM JWT is stored inside verifyMagicLink; now fetch profile
         const profile = await getMe();
+        // Populate the shared auth context from the new EKAM token BEFORE we
+        // navigate, so the destination page renders immediately instead of
+        // showing a logged-out state until a manual refresh (#10).
+        await refreshProfile();
         setStatus("success");
         toast.success("Logged in successfully!");
-        // Honor an explicit `next` path (e.g. a magic link that points a judge
-        // straight to their anomalies page); only internal paths are allowed.
+        // Destination priority: explicit internal `next` path → the specific
+        // event this link was generated for (event_id in the URL) → role default.
         const nextParam = searchParams.get("next");
-        const dest =
-          nextParam && nextParam.startsWith("/")
-            ? nextParam
-            : getRoleDashboard(
-                profile.role as Parameters<typeof getRoleDashboard>[0]
-              );
+        const eventId = searchParams.get("event_id");
+        const role = profile.role as Parameters<typeof getRoleDashboard>[0];
+        let dest: string;
+        if (nextParam && nextParam.startsWith("/")) {
+          dest = nextParam;
+        } else if (eventId && role === "participant") {
+          dest = `/participant/events/${eventId}`;
+        } else if (eventId && role === "judge") {
+          dest = `/judge/events/${eventId}`;
+        } else {
+          dest = getRoleDashboard(role);
+        }
         // Small delay so the user sees the success state before redirect
         setTimeout(() => {
           router.push(dest);
         }, 1200);
       } catch (err) {
+        // Verification failed — don't leave the tab marked as an EKAM session
+        // with no token (it would block Firebase auth for no reason).
+        setSessionKind(null);
         const message =
           err instanceof Error ? err.message : "This link is invalid or has expired.";
         setErrorMsg(message);

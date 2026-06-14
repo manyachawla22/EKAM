@@ -31,6 +31,7 @@ class RoundResponse(RoundBase):
     status: RoundStatus
     start_date: Optional[datetime]
     end_date: Optional[datetime]
+    cutoff_score: Optional[float] = None
     created_at: datetime
 
     class Config:

@@ -25,6 +25,7 @@ class EmailDraftResponse(EmailDraftBase):
     status: EmailStatus
     approval_id: Optional[UUID] = None
     sent_at: Optional[datetime] = None
+    last_error: Optional[str] = None
     created_at: datetime
 
     class Config:

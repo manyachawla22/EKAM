@@ -73,6 +73,28 @@ export function getEkamToken(): string | null {
   return sessionStorage.getItem(EKAM_TOKEN_KEY);
 }
 
+// ─── Per-tab session kind ─────────────────────────────────────────────────────
+// Firebase auth is shared across all tabs (localStorage/IndexedDB), but the EKAM
+// token is per-tab (sessionStorage). To stop a participant/judge tab from ever
+// borrowing the organizer's shared Firebase identity (e.g. if its EKAM token is
+// briefly absent), each tab records HOW it logged in. A tab marked "ekam"
+// (OTP/magic-link) will never fall back to Firebase in getAuthHeaders; an
+// "organizer" (or unmarked, e.g. fresh) tab still may, so Firebase bootstrap and
+// re-auth keep working.
+type SessionKind = "ekam" | "organizer";
+const SESSION_KIND_KEY = "ekam:session-kind";
+
+export function setSessionKind(kind: SessionKind | null): void {
+  if (typeof window === "undefined") return;
+  if (kind) sessionStorage.setItem(SESSION_KIND_KEY, kind);
+  else sessionStorage.removeItem(SESSION_KIND_KEY);
+}
+
+export function getSessionKind(): SessionKind | null {
+  if (typeof window === "undefined") return null;
+  return sessionStorage.getItem(SESSION_KIND_KEY) as SessionKind | null;
+}
+
 // ─── Auth Headers ─────────────────────────────────────────────────────────────
 
 export async function getAuthHeaders(): Promise<HeadersInit> {
@@ -85,6 +107,13 @@ export async function getAuthHeaders(): Promise<HeadersInit> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${ekam}`,
     };
+  }
+  // This tab logged in as a participant/judge (OTP/magic-link). Never fall back
+  // to the shared Firebase identity — doing so would send their requests as the
+  // organizer. Better an honest unauthenticated request (clean 401) than acting
+  // as the wrong actor. (Firebase is shared per-origin; the EKAM token is per-tab.)
+  if (getSessionKind() === "ekam") {
+    return { "Content-Type": "application/json" };
   }
   // Make sure Firebase has restored any persisted session before reading
   // currentUser, so requests fired during app startup still carry a token.
@@ -214,6 +243,7 @@ export async function verifyOtpAccess(
   });
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    setSessionKind("ekam");
   }
   return resp;
 }
@@ -226,6 +256,7 @@ export async function verifyMagicLink(token: string): Promise<OtpTokenResponse> 
   });
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    setSessionKind("ekam");
   }
   return resp;
 }
@@ -292,6 +323,9 @@ export async function loginUser(body: LoginBody): Promise<User> {
   // backend and skip the Google round-trip.
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    // Mark this tab as a Firebase-backed organizer session, overwriting any
+    // stale "ekam" mark if the tab was previously a participant/judge login.
+    setSessionKind("organizer");
   }
 
   // The /auth/login response includes the profile fields directly, so we

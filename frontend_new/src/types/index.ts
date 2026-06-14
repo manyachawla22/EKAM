@@ -65,6 +65,7 @@ export interface Round {
   status: RoundStatus;
   start_date?: string;
   end_date?: string;
+  cutoff_score?: number | null; // single source of truth for advancement (#13)
   created_at?: string;
 }
 

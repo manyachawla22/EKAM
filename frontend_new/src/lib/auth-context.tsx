@@ -8,7 +8,7 @@ import React, {
   useCallback,
 } from "react";
 import { onAuthStateChanged, auth, type FirebaseUser } from "./firebase";
-import { loginUser, getMe, setEkamToken, getEkamToken } from "./api";
+import { loginUser, getMe, setEkamToken, getEkamToken, setSessionKind, getSessionKind } from "./api";
 import type { User, UserRole } from "@/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -81,15 +81,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const backendUser = await getMe();
       setProfile(backendUser);
-    } catch {
-      // Token expired or invalid — clear it so the user sees the login page
-      setProfile(null);
-      setEkamToken(null);
+    } catch (err) {
+      // Only treat an actual auth rejection (401/403) as "logged out" and clear
+      // the EKAM token. A transient failure (timeout, 500, backend reloading,
+      // DB pool blip) must NOT wipe the token: doing so drops the participant/
+      // judge session, and since Firebase auth is shared across all tabs while
+      // the EKAM token is per-tab, the next request silently falls back to the
+      // organizer's Firebase identity — i.e. participant/judge actions get sent
+      // as the organizer. On a transient error, keep the token (and any existing
+      // profile); a later refresh/poll recovers it.
+      const msg = err instanceof Error ? err.message : "";
+      if (/\((401|403)\)/.test(msg)) {
+        setProfile(null);
+        setEkamToken(null);
+        setSessionKind(null);
+      }
     }
   }, []);
 
   const refreshProfile = useCallback(async () => {
-    if (user) {
+    // An EKAM (participant/judge) tab must always refresh via its own session,
+    // even if `user` still holds a shared organizer Firebase identity — otherwise
+    // syncProfile→loginUser would overwrite this tab's EKAM token with the org's.
+    if (getSessionKind() === "ekam") {
+      setUser(null);
+      if (getEkamToken()) {
+        await syncEkamOnlyProfile();
+      } else {
+        setProfile(null);
+      }
+    } else if (user) {
       await syncProfile(user);
     } else if (getEkamToken()) {
       await syncEkamOnlyProfile();
@@ -100,10 +121,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setProfile(null);
     setEkamToken(null);
+    setSessionKind(null);
   }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      // CRITICAL for shared browsers: Firebase auth is shared across all tabs, so
+      // this listener fires with the *organizer's* Firebase user even inside a
+      // participant/judge tab. If we let that through, syncProfile→loginUser would
+      // overwrite this tab's EKAM token with the organizer's and hijack the
+      // session. A tab that logged in as a participant/judge (kind "ekam") must
+      // ignore Firebase entirely and stay on its per-tab EKAM session.
+      if (getSessionKind() === "ekam") {
+        setUser(null);
+        if (getEkamToken()) {
+          await syncEkamOnlyProfile();
+        } else {
+          setProfile(null);
+        }
+        setLoading(false);
+        return;
+      }
+
       setUser(firebaseUser);
       if (firebaseUser) {
         await syncProfile(firebaseUser);

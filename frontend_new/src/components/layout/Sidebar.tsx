@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
@@ -21,6 +21,7 @@ import {
   Award,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
+import { useEventStream } from "@/lib/useEventStream";
 import { listPendingApprovals, listAnomalies } from "@/lib/api";
 
 interface NavItem {
@@ -114,33 +115,43 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  // Poll for pending approvals + unresolved anomalies when inside an event
+  // Refresh the approval/anomaly counts for the badge. Used by both the poll
+  // fallback and the live SSE subscription below.
+  const refreshCounts = useCallback(async () => {
+    if (!eventId) {
+      setPendingApprovals(0);
+      setUnresolvedAnomalies(0);
+      return;
+    }
+    try {
+      const [approvals, anomalies] = await Promise.all([
+        listPendingApprovals(eventId).catch(() => []),
+        listAnomalies(eventId).catch(() => []),
+      ]);
+      setPendingApprovals(approvals.filter((a) => a.status === "pending").length);
+      setUnresolvedAnomalies(anomalies.filter((a) => !a.is_resolved).length);
+    } catch {
+      // silent
+    }
+  }, [eventId]);
+
+  // Live: refresh the glow badge the instant an approval/anomaly/pipeline signal
+  // arrives, so the menu reflects state in real time instead of up to 30s late.
+  useEventStream(["approval", "anomaly", "pipeline"], refreshCounts);
+
+  // Poll fallback for pending approvals + unresolved anomalies when inside an event.
   useEffect(() => {
     if (!eventId) {
       setPendingApprovals(0);
       setUnresolvedAnomalies(0);
       return;
     }
-
-    const poll = async () => {
-      try {
-        const [approvals, anomalies] = await Promise.all([
-          listPendingApprovals(eventId).catch(() => []),
-          listAnomalies(eventId).catch(() => []),
-        ]);
-        setPendingApprovals(approvals.filter((a) => a.status === "pending").length);
-        setUnresolvedAnomalies(anomalies.filter((a) => !a.is_resolved).length);
-      } catch {
-        // silent
-      }
-    };
-
-    poll();
-    intervalRef.current = setInterval(poll, POLL_MS);
+    refreshCounts();
+    intervalRef.current = setInterval(refreshCounts, POLL_MS);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [eventId]);
+  }, [eventId, refreshCounts]);
 
   const navItems = getNavItems(role, eventId, profile ?? undefined);
   if (navItems.length === 0) return null;
