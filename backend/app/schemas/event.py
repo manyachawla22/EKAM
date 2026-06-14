@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Any
 from uuid import UUID
 from datetime import datetime
 
@@ -31,6 +31,7 @@ class RoundResponse(RoundBase):
     status: RoundStatus
     start_date: Optional[datetime]
     end_date: Optional[datetime]
+    cutoff_score: Optional[float] = None
     created_at: datetime
 
     class Config:
@@ -77,6 +78,14 @@ class EventResponse(EventBase):
 
     status: EventStatus
     stage: EventStage
+
+    registration_opens_at: Optional[datetime] = None
+    registration_closes_at: Optional[datetime] = None
+
+    registration_form_fields: Optional[List[Any]] = None
+    participants_model: Optional[str] = None
+    individual_registration_allowed: Optional[bool] = None
+    eligibility: Optional[Any] = None
 
     created_at: datetime
     updated_at: Optional[datetime]

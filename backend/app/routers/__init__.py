@@ -21,6 +21,8 @@ from .pipeline import router as pipeline_router
 from .test_email import router as test_email_router
 from .themes import router as themes_router
 from .rubrics import router as rubrics_router
+from .stream import router as stream_router
+from .public import router as public_router
 
 api_router = APIRouter()
 # Each router defines its own prefix internally (e.g. APIRouter(prefix="/auth")).
@@ -47,4 +49,6 @@ api_router.include_router(pipeline_router)
 api_router.include_router(test_email_router)
 api_router.include_router(themes_router)
 api_router.include_router(rubrics_router)
+api_router.include_router(stream_router, tags=["stream"])
+api_router.include_router(public_router)
 

@@ -230,7 +230,7 @@ export default function AICreatePage() {
       const result = await aiDeploy(eventConfig);
       if (result.success && result.event_id) {
         setDeployedEventId(result.event_id);
-        toast.success("Event deployed successfully!");
+        toast.success("Event submitted for approval — approve it in Approvals to publish (event + form go live together).");
       } else {
         toast.error("Deployment failed");
       }
@@ -368,7 +368,7 @@ export default function AICreatePage() {
                 marginTop: "0.125rem",
               }}
             >
-              Ready to deploy your event. Click deploy to create it.
+              Ready to deploy. Clicking deploy submits the event for approval — it goes live once you approve it in the Approvals panel.
             </p>
           </div>
           <Button variant="primary" loading={deploying} onClick={handleDeploy}>

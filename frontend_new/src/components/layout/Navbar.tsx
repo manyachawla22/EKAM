@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut, LayoutDashboard, Zap } from "lucide-react";
+import { LogOut, LayoutDashboard, Zap, ShieldAlert } from "lucide-react";
 import { signOut, auth } from "@/lib/firebase";
 import { useAuth } from "@/lib/auth-context";
 import Button from "@/components/ui/Button";
@@ -41,7 +41,7 @@ export default function Navbar() {
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4 }}
-      className="fixed top-0 left-0 right-0 z-40 border-b border-white/5 bg-[#0a0a0a]/80 backdrop-blur-xl"
+      className="fixed top-0 left-0 right-0 z-40 border-b border-white/5 bg-[#0a0a0a]/95 backdrop-blur-xl"
     >
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
         {/* Logo */}
@@ -73,6 +73,16 @@ export default function Navbar() {
               {/* Notifications */}
               <NotificationsBell />
 
+              {/* Judge-only: private flagged-evaluations page */}
+              {profile.role === "judge" && (
+                <Link href="/judge/anomalies">
+                  <Button variant="ghost" size="sm">
+                    <ShieldAlert className="h-4 w-4" />
+                    <span className="hidden sm:inline">Anomalies</span>
+                  </Button>
+                </Link>
+              )}
+
               {/* Dashboard link */}
               <Link href={getRoleDashboard(profile.role)}>
                 <Button variant="secondary" size="sm">
@@ -89,6 +99,11 @@ export default function Navbar() {
             </>
           ) : (
             <>
+              <Link href="/register">
+                <Button variant="ghost" size="sm">
+                  Register for an Event
+                </Button>
+              </Link>
               <Link href="/login">
                 <Button variant="secondary" size="sm">
                   Login

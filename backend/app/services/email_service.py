@@ -11,6 +11,7 @@ import asyncio
 import base64
 from typing import List, Optional
 from datetime import datetime, timezone
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 import resend
@@ -19,7 +20,98 @@ from app.models.email import EmailDraft, EmailType, EmailStatus
 from app.models.approval import RequestType
 
 from app.services.approval_service import create_approval_request
+from app.services.magic_link_service import generate_magic_link
 from app.core.config import settings
+
+
+# Placeholder that AI-drafted / templated bodies can include where the
+# recipient's personal one-click login link should appear. It is replaced at
+# SEND time with a freshly minted, per-recipient magic link (see
+# `_inject_magic_link`). If a body omits the placeholder, a login CTA is
+# appended instead, so every participant/judge email is one-click regardless.
+MAGIC_LINK_PLACEHOLDER = "{{magic_link}}"
+
+
+async def magic_link_for_recipient(
+    db: AsyncSession,
+    event_id,
+    email: str,
+) -> Optional[str]:
+    """Resolve the participant or judge with this email *within this event* and
+    mint a single-use magic-login link for them. Returns ``None`` when the
+    address doesn't belong to a participant/judge of the event (e.g. an
+    organizer or an unknown address) so callers can skip injection gracefully.
+
+    Per-recipient is the whole point: a shared link would log everyone in as the
+    same person. Generation therefore happens here, at send time, never at draft
+    time.
+    """
+    if not event_id or not email:
+        return None
+
+    from app.models.participant import Participant
+    from app.models.judge import Judge
+
+    normalized = email.strip().lower()
+
+    participant = (
+        await db.execute(
+            select(Participant).where(
+                Participant.event_id == event_id,
+                func.lower(Participant.email) == normalized,
+            )
+        )
+    ).scalars().first()
+    if participant:
+        return await generate_magic_link(
+            db, str(participant.id), "participant", str(event_id)
+        )
+
+    judge = (
+        await db.execute(
+            select(Judge).where(
+                Judge.event_id == event_id,
+                func.lower(Judge.email) == normalized,
+            )
+        )
+    ).scalars().first()
+    if judge:
+        return await generate_magic_link(db, str(judge.id), "judge", str(event_id))
+
+    return None
+
+
+def _inject_magic_link(body: Optional[str], link: str, is_html: bool) -> Optional[str]:
+    """Substitute the magic-link placeholder, or append a login CTA if absent."""
+    if not body:
+        # No body at all — synthesize a minimal one so the link still goes out.
+        return (
+            f'<p><a href="{link}">Log in to EKAM</a></p>'
+            if is_html
+            else f"Log in to EKAM (one-click, no OTP needed):\n{link}\n"
+        )
+
+    if MAGIC_LINK_PLACEHOLDER in body:
+        return body.replace(MAGIC_LINK_PLACEHOLDER, link)
+
+    # No placeholder — append a clear call to action.
+    if is_html:
+        return (
+            f"{body}"
+            f'<p style="margin-top:16px">'
+            f'<a href="{link}" '
+            f'style="background:#e8503a;color:#fff;padding:10px 18px;'
+            f'border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">'
+            f"Open EKAM &rarr;</a></p>"
+            f'<p style="font-size:12px;color:#888">'
+            f"This is your personal one-click login link — no OTP required. "
+            f"It expires in 48 hours and can be used once.</p>"
+        )
+    return (
+        f"{body}\n\n"
+        f"Open EKAM (one-click login, no OTP needed):\n{link}\n\n"
+        f"This personal link expires in 48 hours and can be used once."
+    )
 
 
 # =========================================================
@@ -30,11 +122,13 @@ def _participant_login_template(event_name: str, event_hash: str, frontend_url: 
     return (
         f"Hello,\n\n"
         f"Your team has been formed for {event_name}!\n\n"
-        f"To access the participant portal, log in with:\n"
+        f"Click your personal one-click login link to open the participant portal "
+        f"(no OTP needed):\n\n"
+        f"{{{{magic_link}}}}\n\n"
+        f"Prefer to log in manually? Visit {frontend_url}/auth and use:\n"
         f"  Event Hash : {event_hash}\n"
-        f"  Your Email : (the address this email was sent to)\n\n"
-        f"Visit {frontend_url}/auth, enter your event hash and email, then request your OTP.\n"
-        f"The OTP will be sent to this email address.\n\n"
+        f"  Your Email : (the address this email was sent to)\n"
+        f"then request your OTP.\n\n"
         f"Best of luck,\n"
         f"Team EKAM"
     )
@@ -44,10 +138,13 @@ def _judge_login_template(event_name: str, event_hash: str, frontend_url: str) -
     return (
         f"Hello,\n\n"
         f"You have been assigned as a judge for {event_name}.\n\n"
-        f"To access the judge portal, log in with:\n"
+        f"Click your personal one-click login link to open the judge portal "
+        f"(no OTP needed):\n\n"
+        f"{{{{magic_link}}}}\n\n"
+        f"Prefer to log in manually? Visit {frontend_url}/auth and use:\n"
         f"  Event Hash : {event_hash}\n"
-        f"  Your Email : (the address this email was sent to)\n\n"
-        f"Visit {frontend_url}/auth, enter your event hash and email, then request your OTP.\n\n"
+        f"  Your Email : (the address this email was sent to)\n"
+        f"then request your OTP.\n\n"
         f"Teams are looking forward to your evaluation.\n\n"
         f"Team EKAM"
     )
@@ -213,29 +310,102 @@ async def send_direct_email(
         return False
 
 
+async def send_authenticated_email(
+    db: AsyncSession,
+    event_id,
+    to: str,
+    subject: str,
+    body_html: Optional[str] = None,
+    body_text: Optional[str] = None,
+    attachments: Optional[dict[str, bytes]] = None,
+) -> bool:
+    """Send a single immediate email with a per-recipient one-click login link
+    injected (no OTP). Use for system-triggered messages to a known
+    participant/judge — anomaly alerts, round results, etc.
+
+    Falls back to plain `send_direct_email` if the recipient can't be resolved to
+    a participant/judge of the event. Never raises.
+    """
+    try:
+        link = await magic_link_for_recipient(db, event_id, to)
+    except Exception as exc:
+        print(f"[email_service] magic link generation failed for {to}: {exc}")
+        link = None
+
+    if link:
+        body_html = _inject_magic_link(body_html, link, is_html=True) if body_html else body_html
+        body_text = _inject_magic_link(body_text, link, is_html=False) if body_text else body_text
+        # If the caller only supplied one body form, make sure the link still
+        # ships by synthesizing the missing form.
+        if not body_html and not body_text:
+            body_text = _inject_magic_link(None, link, is_html=False)
+
+    return await send_direct_email(
+        to=to,
+        subject=subject,
+        body_html=body_html,
+        body_text=body_text,
+        attachments=attachments,
+    )
+
+
+# Resend's free tier allows ~2 requests/second. Space out batch sends so a burst
+# of drafts doesn't trip a 429. Only the Resend call counts against the limit.
+_SEND_THROTTLE_SECONDS = 0.6
+
+
 async def send_email(
     db: AsyncSession,
     email_draft: EmailDraft,
 ) -> bool:
     """
-    Attempts to send a drafted email and updates its status.
-    Returns True on success, False on failure (never raises).
+    Renders a per-recipient one-click login link into the draft body (best-effort)
+    and sends it via Resend, updating the draft's status. Returns True on success,
+    False on failure (never raises).
+
+    The rendered body is NOT persisted — the stored body keeps its {{magic_link}}
+    placeholder so a later retry mints a *fresh* single-use link instead of reusing
+    one that may already be consumed or expired. On failure the Resend error text is
+    recorded on `email_draft.last_error` so the cause is visible from the DB.
     """
+    # Mint a fresh per-recipient magic link at send time. Per-recipient is required:
+    # a shared link would authenticate everyone as the same person. Best-effort —
+    # if the recipient isn't a participant/judge of the event (or generation fails),
+    # the email still goes out, just without an auto-login link.
+    try:
+        link = await magic_link_for_recipient(
+            db, email_draft.event_id, email_draft.recipient_email
+        )
+    except Exception as exc:
+        print(f"[email_service] magic link generation failed for {email_draft.recipient_email}: {exc}")
+        link = None
+
+    body_html = email_draft.body_html
+    body_text = email_draft.body_text
+    if link:
+        body_html = _inject_magic_link(body_html, link, is_html=True) if body_html else body_html
+        body_text = _inject_magic_link(body_text, link, is_html=False) if body_text else body_text
+        if not body_html and not body_text:
+            body_text = _inject_magic_link(None, link, is_html=False)
+
     try:
         await _send_via_resend(
             recipient=email_draft.recipient_email,
             subject=email_draft.subject,
-            body=email_draft.body_html or email_draft.body_text or "",
+            body=body_html or body_text or "",
             email_type=email_draft.email_type.value,
-            is_html=bool(email_draft.body_html),
+            is_html=bool(body_html),
         )
         email_draft.status = EmailStatus.sent
         email_draft.sent_at = datetime.now(timezone.utc)
+        email_draft.last_error = None
         await db.commit()
         return True
     except Exception as exc:
-        print(f"[email_service] FAILED to send to {email_draft.recipient_email}: {exc}")
+        msg = str(exc)
+        print(f"[email_service] FAILED to send to {email_draft.recipient_email}: {msg}")
         email_draft.status = EmailStatus.failed
+        email_draft.last_error = msg[:1000]
         await db.commit()
         return False
 
@@ -373,9 +543,13 @@ async def draft_bulk_emails(
     payload = {
         "email_type": email_type.value,
         "subject": subject,
+        # Include the body so the organizer can see (and edit) what the batch says
+        # in the approval panel. execute_approved_email_batch applies any edits.
+        "body_text": body_text or "",
+        "body_html": body_html or "",
         "recipient_count": len(recipients)
     }
-    
+
     approval = await create_approval_request(
         db=db,
         event_id=event_id,
@@ -408,25 +582,81 @@ async def execute_approved_email_batch(
     approval_id: str
 ):
     """
-    Executed by the Approval Service when an email batch is approved.
-    Fetches all linked drafts, marks them as approved, and sends them.
+    Executed by the Approval Service when an email batch is approved. Fetches the
+    linked drafts and sends them, throttled to respect Resend's rate limit.
+
+    Re-running picks up drafts that previously FAILED as well as those still
+    pending_approval, so re-approving a batch retries its failures. send_email()
+    injects the per-recipient login link, records status/last_error, and commits.
     """
     result = await db.execute(
         select(EmailDraft).where(
             EmailDraft.approval_id == approval_id,
-            EmailDraft.status == EmailStatus.pending_approval
+            EmailDraft.status.in_([EmailStatus.pending_approval, EmailStatus.failed]),
         )
     )
     drafts = result.scalars().all()
-    
-    sent_count = 0
+
+    # Apply any edits the organizer made to the subject/body in the approval panel
+    # (stored on the approval payload) onto the drafts before sending, so the
+    # editable preview is truthful rather than cosmetic.
+    from app.models.approval import ApprovalRequest
+
+    approval = (
+        await db.execute(select(ApprovalRequest).where(ApprovalRequest.id == approval_id))
+    ).scalars().first()
+    payload = (approval.payload if approval else None) or {}
+    edited_subject = payload.get("subject")
+    edited_text = payload.get("body_text")
+    edited_html = payload.get("body_html")
     for draft in drafts:
-        # send_email() handles status update to sent/failed and commits internally
-        success = await send_email(db, draft)
-        if success:
+        if edited_subject:
+            draft.subject = edited_subject
+        # Empty string is a valid "no HTML body" — only override when the key is
+        # present, but treat missing keys as "leave the draft as-is".
+        if edited_text is not None:
+            draft.body_text = edited_text
+        if edited_html is not None:
+            draft.body_html = edited_html
+    if drafts:
+        await db.commit()
+
+    sent_count = 0
+    for i, draft in enumerate(drafts):
+        if i > 0:
+            await asyncio.sleep(_SEND_THROTTLE_SECONDS)
+        if await send_email(db, draft):
             sent_count += 1
 
     return sent_count
+
+
+async def resend_failed_emails(
+    db: AsyncSession,
+    event_id: str,
+) -> dict:
+    """Retry every draft for an event that previously failed to send, throttled to
+    respect Resend's rate limit. Returns attempt/sent/failed counts for the caller."""
+    result = await db.execute(
+        select(EmailDraft).where(
+            EmailDraft.event_id == event_id,
+            EmailDraft.status == EmailStatus.failed,
+        ).order_by(EmailDraft.created_at)
+    )
+    drafts = result.scalars().all()
+
+    sent_count = 0
+    for i, draft in enumerate(drafts):
+        if i > 0:
+            await asyncio.sleep(_SEND_THROTTLE_SECONDS)
+        if await send_email(db, draft):
+            sent_count += 1
+
+    return {
+        "attempted": len(drafts),
+        "sent": sent_count,
+        "failed": len(drafts) - sent_count,
+    }
 
 
 async def list_drafts(

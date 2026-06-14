@@ -6,9 +6,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Bell, Check, CheckCheck } from "lucide-react";
 import { listMyNotifications, markNotificationRead } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { useEventStream } from "@/lib/useEventStream";
 import type { Notification, NotificationType } from "@/types";
 
-const POLL_MS = 30_000;
+// Live updates arrive via SSE (useEventStream below); this poll is just a slow
+// safety net in case the stream drops or the session has no EKAM JWT.
+const POLL_MS = 60_000;
 const MAX_PREVIEW = 25;
 
 const TYPE_ACCENT: Record<NotificationType, string> = {
@@ -56,6 +59,9 @@ export default function NotificationsBell() {
     const id = window.setInterval(fetchNotifications, POLL_MS);
     return () => window.clearInterval(id);
   }, [user, fetchNotifications]);
+
+  // Live push: refetch immediately when a notification is pushed for this user.
+  useEventStream(["notification"], fetchNotifications);
 
   // Close popover on outside click.
   useEffect(() => {

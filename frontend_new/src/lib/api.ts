@@ -13,6 +13,7 @@ import type {
   PipelineState,
   Notification,
   Anomaly,
+  MyAnomaly,
   Submission,
   Evaluation,
   Report,
@@ -42,6 +43,11 @@ import type {
   GenerateReportBody,
   AutoFormTeamsResponse,
   UserRole,
+  PublicEventCard,
+  PublicEventDetail,
+  ResumeUploadResponse,
+  PublicRegisterRequest,
+  RegistrationFormField,
 } from "@/types";
 
 export const API_BASE =
@@ -67,6 +73,28 @@ export function getEkamToken(): string | null {
   return sessionStorage.getItem(EKAM_TOKEN_KEY);
 }
 
+// ─── Per-tab session kind ─────────────────────────────────────────────────────
+// Firebase auth is shared across all tabs (localStorage/IndexedDB), but the EKAM
+// token is per-tab (sessionStorage). To stop a participant/judge tab from ever
+// borrowing the organizer's shared Firebase identity (e.g. if its EKAM token is
+// briefly absent), each tab records HOW it logged in. A tab marked "ekam"
+// (OTP/magic-link) will never fall back to Firebase in getAuthHeaders; an
+// "organizer" (or unmarked, e.g. fresh) tab still may, so Firebase bootstrap and
+// re-auth keep working.
+type SessionKind = "ekam" | "organizer";
+const SESSION_KIND_KEY = "ekam:session-kind";
+
+export function setSessionKind(kind: SessionKind | null): void {
+  if (typeof window === "undefined") return;
+  if (kind) sessionStorage.setItem(SESSION_KIND_KEY, kind);
+  else sessionStorage.removeItem(SESSION_KIND_KEY);
+}
+
+export function getSessionKind(): SessionKind | null {
+  if (typeof window === "undefined") return null;
+  return sessionStorage.getItem(SESSION_KIND_KEY) as SessionKind | null;
+}
+
 // ─── Auth Headers ─────────────────────────────────────────────────────────────
 
 export async function getAuthHeaders(): Promise<HeadersInit> {
@@ -79,6 +107,13 @@ export async function getAuthHeaders(): Promise<HeadersInit> {
       "Content-Type": "application/json",
       Authorization: `Bearer ${ekam}`,
     };
+  }
+  // This tab logged in as a participant/judge (OTP/magic-link). Never fall back
+  // to the shared Firebase identity — doing so would send their requests as the
+  // organizer. Better an honest unauthenticated request (clean 401) than acting
+  // as the wrong actor. (Firebase is shared per-origin; the EKAM token is per-tab.)
+  if (getSessionKind() === "ekam") {
+    return { "Content-Type": "application/json" };
   }
   // Make sure Firebase has restored any persisted session before reading
   // currentUser, so requests fired during app startup still carry a token.
@@ -208,6 +243,7 @@ export async function verifyOtpAccess(
   });
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    setSessionKind("ekam");
   }
   return resp;
 }
@@ -220,6 +256,7 @@ export async function verifyMagicLink(token: string): Promise<OtpTokenResponse> 
   });
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    setSessionKind("ekam");
   }
   return resp;
 }
@@ -286,6 +323,9 @@ export async function loginUser(body: LoginBody): Promise<User> {
   // backend and skip the Google round-trip.
   if (resp?.access_token) {
     setEkamToken(resp.access_token);
+    // Mark this tab as a Firebase-backed organizer session, overwriting any
+    // stale "ekam" mark if the tab was previously a participant/judge login.
+    setSessionKind("organizer");
   }
 
   // The /auth/login response includes the profile fields directly, so we
@@ -354,6 +394,30 @@ export async function createRound(body: CreateRoundBody): Promise<Round> {
 
 export async function listRounds(eventId: string): Promise<Round[]> {
   return apiFetch<Round[]>(`/rounds/${eventId}`);
+}
+
+// Organizer: set/postpone a round's submission window. `reopen` also restores
+// teams disqualified for missing this round's deadline.
+export async function updateRoundWindow(
+  eventId: string,
+  roundId: string,
+  body: { start_date?: string | null; end_date?: string | null; reopen?: boolean }
+): Promise<Round> {
+  return apiFetch<Round>(`/rounds/${eventId}/${roundId}/window`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+// Organizer: set/postpone the event's registration window.
+export async function updateRegistrationWindow(
+  eventId: string,
+  body: { registration_opens_at?: string | null; registration_closes_at?: string | null }
+): Promise<Event> {
+  return apiFetch<Event>(`/events/${eventId}/registration-window`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
 }
 
 // ─── PARTICIPANTS ─────────────────────────────────────────────────────────────
@@ -682,6 +746,23 @@ export async function resolveAnomaly(
   );
 }
 
+// Judge-scoped: the calling judge's own anomalies (server-enforced ownership),
+// enriched so each can be fixed inline.
+export async function listMyAnomalies(eventId?: string): Promise<MyAnomaly[]> {
+  const qs = eventId ? `?event_id=${encodeURIComponent(eventId)}` : "";
+  return apiFetch<MyAnomaly[]>(`/anomalies/mine${qs}`);
+}
+
+export async function resolveMyAnomaly(
+  anomalyId: string,
+  body: { rubric_scores: Record<string, number>; feedback?: string }
+): Promise<{ message: string; anomaly_id: string }> {
+  return apiFetch<{ message: string; anomaly_id: string }>(
+    `/anomalies/mine/${anomalyId}/resolve`,
+    { method: "POST", body: JSON.stringify(body) }
+  );
+}
+
 // ─── DELETE OPERATIONS ───────────────────────────────────────────────────────
 
 export async function deleteParticipant(
@@ -770,6 +851,26 @@ export async function uploadJudgesCsv(
   file: File
 ): Promise<{ message: string; count: number }> {
   return uploadCsv(`/judges/${eventId}/upload-csv`, file);
+}
+
+// Fetch the event-specific participant CSV template (#3) and trigger a download.
+// Headers come from getAuthHeaders (organizer-only endpoint); the file is built
+// from the event's registration fields so it matches what the importer expects.
+export async function downloadParticipantsSampleCsv(eventId: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/participants/${eventId}/sample-csv`, {
+    headers: headers as Record<string, string>,
+  });
+  if (!res.ok) throw new Error(`Could not download sample CSV (${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "participants_sample.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
@@ -970,5 +1071,83 @@ export async function submitTeamPreference(
   return apiFetch<void>(`/teams/${eventId}/${teamId}/preferences`, {
     method: "POST",
     body: JSON.stringify({ preferred_name, preferred_theme_id: preferred_theme_id ?? null }),
+  });
+}
+
+// ─── PUBLIC REGISTRATION (Task 6 — no auth) ───────────────────────────────────
+// These hit /api/v1/public/* and intentionally send NO Authorization header:
+// the page is open to anyone without signup/login.
+
+async function publicFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = `${API_BASE}/public${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, options);
+  } catch {
+    await new Promise((r) => setTimeout(r, 600));
+    response = await fetch(url, options);
+  }
+  if (!response.ok) {
+    let msg = `API Error: ${response.status}`;
+    try {
+      const data = (await response.json()) as { detail?: unknown };
+      const d = data.detail;
+      if (typeof d === "string") msg = d;
+      else if (Array.isArray(d))
+        msg = d
+          .map((it) =>
+            it && typeof it === "object" ? (it as { msg?: string }).msg || JSON.stringify(it) : String(it)
+          )
+          .join("; ");
+      else if (d) msg = JSON.stringify(d);
+    } catch {
+      /* non-JSON body */
+    }
+    throw new Error(`${msg} (${response.status})`);
+  }
+  if (response.status === 204) return {} as T;
+  return response.json() as Promise<T>;
+}
+
+export async function listPublicEvents(): Promise<PublicEventCard[]> {
+  return publicFetch<PublicEventCard[]>("/events");
+}
+
+export async function getPublicEvent(hash: string): Promise<PublicEventDetail> {
+  return publicFetch<PublicEventDetail>(`/events/${hash}`);
+}
+
+export async function uploadPublicResume(
+  hash: string,
+  file: File
+): Promise<ResumeUploadResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  return publicFetch<ResumeUploadResponse>(`/events/${hash}/resume`, {
+    method: "POST",
+    body: form,
+  });
+}
+
+export async function registerPublic(
+  hash: string,
+  body: PublicRegisterRequest
+): Promise<{ success: boolean; status: string; participant_id?: string; team_id?: string; ats_score?: number | null; members?: number }> {
+  return publicFetch(`/events/${hash}/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ─── REGISTRATION FORM EDITOR (organizer — approval-gated) ────────────────────
+export async function proposeRegistrationForm(
+  eventId: string,
+  fields: RegistrationFormField[],
+  opts?: { participants_model?: string; individual_registration_allowed?: boolean }
+): Promise<{ approval_id: string; status: string; message: string }> {
+  return apiFetch(`/events/${eventId}/registration-form`, {
+    method: "POST",
+    body: JSON.stringify({ fields, ...(opts || {}) }),
   });
 }

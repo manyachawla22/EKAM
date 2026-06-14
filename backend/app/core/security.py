@@ -43,7 +43,7 @@ def _verify_firebase_token(token: str) -> dict:
         try:
             decoded_token = auth.verify_id_token(
                 token,
-                clock_skew_seconds=10,
+                clock_skew_seconds=60,  # max allowed; tolerate machine clock drift
             )
             return {
                 "uid": decoded_token.get("uid"),

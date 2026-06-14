@@ -10,6 +10,7 @@ import {
   ArrowLeft, Star, CheckCircle, Clock, ChevronDown, ChevronUp, Bell, ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useEventStream } from "@/lib/useEventStream";
 import {
   getEvent,
   getJudgeDashboard,
@@ -105,6 +106,10 @@ export default function JudgeEventDashboard() {
   }, [event_id, profile]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // Live: refresh when a participant submits or the pipeline advances, so the
+  // judge sees new submissions without a manual refresh (#12).
+  useEventStream(["submission", "pipeline"], fetchAll);
 
   const byRound: AssignmentByRound[] = rounds.map((r) => ({
     round: r,

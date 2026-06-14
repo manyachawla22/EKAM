@@ -19,6 +19,7 @@ import {
 } from "@/lib/api";
 import type { Round, Submission, Team, Event, EventStage } from "@/types";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { useEventStream } from "@/lib/useEventStream";
 import Button from "@/components/ui/Button";
 
 const card: React.CSSProperties = {
@@ -51,7 +52,10 @@ export default function LeaderboardPage() {
   const [loadingBoard, setLoadingBoard] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  const [cutoffScore, setCutoffScore] = useState(60);
+  // Read-only: the cutoff is the round's stored value (single source of truth,
+  // #13), edited only in the advancement approval. Falls back to 60 for the
+  // cutoff-line visualization before any advancement has set it.
+  const cutoffScore = rounds.find((r) => r.id === selectedRound)?.cutoff_score ?? 60;
   const [targetStage, setTargetStage] = useState<EventStage>("results");
   const [proposing, setProposing] = useState(false);
 
@@ -115,10 +119,17 @@ export default function LeaderboardPage() {
       .finally(() => setLoadingBoard(false));
   }, [selectedRound]);
 
-  useAutoRefresh(() => {
+  const refreshAll = useCallback(() => {
     fetchBase();
     if (selectedRound) getLeaderboard(selectedRound).then(setSubmissions).catch(() => {});
-  });
+  }, [fetchBase, selectedRound]);
+
+  // Live push: a submitted/updated score, a pipeline advance, or a resolved
+  // anomaly all change the board — refetch instantly (SSE).
+  useEventStream(["leaderboard", "pipeline", "anomaly"], refreshAll);
+
+  // Slow polling fallback (dropped stream / non-JWT session).
+  useAutoRefresh(refreshAll, 60000);
 
   const teamName = (teamId: string) =>
     teams.find((t) => t.id === teamId)?.name ?? `Team ${teamId.slice(0, 6)}`;
@@ -278,16 +289,14 @@ export default function LeaderboardPage() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
               <div>
                 <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>
-                  Cutoff Score
+                  Cutoff Score (read-only)
                 </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={cutoffScore}
-                  onChange={(e) => setCutoffScore(Number(e.target.value))}
-                  style={{ ...inputBase, width: "100%" }}
-                />
+                <div style={{ ...inputBase, width: "100%", opacity: 0.7 }}>
+                  {cutoffScore}
+                </div>
+                <p style={{ marginTop: "0.3rem", fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
+                  Set this in the advancement approval — it applies everywhere.
+                </p>
               </div>
               <div>
                 <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>

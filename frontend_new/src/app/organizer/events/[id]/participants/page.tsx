@@ -5,10 +5,11 @@ export const dynamic = "force-dynamic";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Users, Search, Trash2 } from "lucide-react";
+import { Users, Search, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import {
   listParticipants, deleteParticipant, uploadParticipantsCsv,
+  downloadParticipantsSampleCsv,
   listTeams, listRounds, listSubmissions, getEvaluations,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -134,12 +135,40 @@ export default function ParticipantsPage() {
             {participants.length} registered
           </p>
         </div>
-        <CsvUploadButton
-          label="Bulk Import CSV"
-          disabled={!id}
-          onUpload={(file) => uploadParticipantsCsv(id, file)}
-          onUploaded={fetchParticipants}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button
+            onClick={async () => {
+              try {
+                await downloadParticipantsSampleCsv(id);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Download failed");
+              }
+            }}
+            disabled={!id}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.5rem 0.85rem",
+              borderRadius: "0.5rem",
+              border: "1px solid #222",
+              background: "transparent",
+              color: "rgba(255,255,255,0.7)",
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              cursor: id ? "pointer" : "not-allowed",
+            }}
+            title="Download a CSV template matching this event's registration fields"
+          >
+            <Download size={14} /> Sample CSV
+          </button>
+          <CsvUploadButton
+            label="Bulk Import CSV"
+            disabled={!id}
+            onUpload={(file) => uploadParticipantsCsv(id, file)}
+            onUploaded={fetchParticipants}
+          />
+        </div>
       </div>
 
       <div
@@ -236,7 +265,7 @@ export default function ParticipantsPage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
+              gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto",
               gap: "1rem",
               borderBottom: "1px solid #222",
               padding: "0.75rem 1.25rem",
@@ -249,6 +278,7 @@ export default function ParticipantsPage() {
           >
             <span>Participant</span>
             <span>Institution</span>
+            <span>Gender</span>
             <span>Skills</span>
             <span>Joined</span>
             <span />
@@ -261,7 +291,7 @@ export default function ParticipantsPage() {
               transition={{ delay: i * 0.03 }}
               style={{
                 display: "grid",
-                gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
+                gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto",
                 gap: "1rem",
                 alignItems: "center",
                 borderBottom: i === filtered.length - 1 ? "none" : "1px solid rgba(34,34,34,0.5)",
@@ -312,6 +342,17 @@ export default function ParticipantsPage() {
                 }}
               >
                 {p.institution || "—"}
+              </span>
+              <span
+                style={{
+                  fontSize: "0.875rem",
+                  color: "rgba(255,255,255,0.6)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {p.gender || "—"}
               </span>
               <span
                 style={{

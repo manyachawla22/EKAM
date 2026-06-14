@@ -10,6 +10,7 @@ Important:
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from statistics import mean, pstdev
 from typing import Any
 from uuid import UUID
@@ -21,7 +22,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import RobustScaler
 
-from app.models.anomaly import Anomaly, AnomalyType
+from app.models.anomaly import Anomaly, AnomalyType, AnomalyReviewStatus
 from app.models.event import Event, Round
 from app.models.judge import Judge
 from app.models.notification import NotificationType
@@ -273,11 +274,11 @@ async def _create_live_anomaly_notification(
     anomaly_payload: dict,
 ):
     """
-    Preserve the old side effect:
-    when analyze_evaluation() is called after one evaluation,
-    create an Anomaly record and notify the organizer.
-
-    The difference is that detection is now ML-based.
+    When analyze_evaluation() flags one evaluation, create the Anomaly record and
+    raise an ORGANIZER APPROVAL (#2) — we deliberately do NOT email the judge or
+    reveal it on their page yet. The organizer decides whether the anomaly is
+    worth considering; only on approval does dispatch_anomaly_review() notify the
+    judge + organizer and surface it. On rejection it's dismissed.
     """
     severity = min(
         1.0,
@@ -300,43 +301,152 @@ async def _create_live_anomaly_notification(
         anomaly_type=AnomalyType.score_variance,
         severity=severity,
         description=description,
+        review_status=AnomalyReviewStatus.pending.value,
     )
 
     db.add(anomaly)
     await db.flush()
 
-    event_result = await db.execute(
-        select(Event).where(Event.id == event_id)
-    )
-    event = event_result.scalars().first()
-
-    # Resolve the judge whose evaluation was flagged so we can alert them
-    # directly — they are the ones who can review and correct the score.
-    judge_result = await db.execute(
-        select(Judge).where(Judge.id == evaluation.judge_id)
-    )
-    judge = judge_result.scalars().first()
+    event = (
+        await db.execute(select(Event).where(Event.id == event_id))
+    ).scalars().first()
+    judge = (
+        await db.execute(select(Judge).where(Judge.id == evaluation.judge_id))
+    ).scalars().first()
 
     await db.commit()
+    await db.refresh(anomaly)
 
-    # Notify the organizer (in-app) — keeps the existing oversight behaviour.
-    if event and event.organizer_id:
-        await create_notification(
+    # Raise the organizer approval. create_approval_request publishes the live
+    # "approval" SSE signal, so the organizer's dashboard surfaces it instantly.
+    try:
+        from app.services.approval_service import create_approval_request
+        from app.models.approval import RequestType
+
+        judge_label = (judge.name or judge.email) if judge else "a judge"
+        await create_approval_request(
             db=db,
             event_id=str(event_id),
-            user_id=str(event.organizer_id),
-            title="ML Score Anomaly Detected",
-            message=description,
-            notification_type=NotificationType.alert,
+            request_type=RequestType.anomaly_review,
+            payload={
+                "anomaly_id": str(anomaly.id),
+                "event_id": str(event_id),
+                "judge_id": str(evaluation.judge_id),
+                "judge_name": judge_label,
+                "judge_email": getattr(judge, "email", None) if judge else None,
+                "description": description,
+                "score": float(anomaly_payload["score"]),
+                "panel_average": float(anomaly_payload["panel_average"]),
+                "judge_average": float(anomaly_payload["judge_average"]),
+                "severity": severity,
+            },
+            requested_by=str(event.organizer_id) if event and event.organizer_id else None,
         )
+    except Exception as exc:
+        print(f"[anomaly_service] raising anomaly approval failed: {exc}")
 
-    # Notify the judge (in-app + email) so they can re-check and modify scores.
+    return anomaly
+
+
+async def dispatch_anomaly_review(
+    db: AsyncSession,
+    anomaly_id: str,
+    approved: bool,
+) -> None:
+    """Apply the organizer's decision on a flagged anomaly (#2).
+
+    approved=True  → mark considered, email the organizer (report) + the judge
+                     (with a one-click magic link to their fix-it page), drop an
+                     in-app action for the judge, and push the live SSE signal so
+                     the judge's page reveals it.
+    approved=False → dismiss: mark rejected + resolved, send nothing, and push an
+                     SSE signal to the organizer so the glow clears (#4).
+    """
+    anomaly = (
+        await db.execute(select(Anomaly).where(Anomaly.id == anomaly_id))
+    ).scalars().first()
+    if not anomaly:
+        return
+
+    event = (
+        await db.execute(select(Event).where(Event.id == anomaly.event_id))
+    ).scalars().first()
+    evaluation = (
+        await db.execute(select(Evaluation).where(Evaluation.id == anomaly.evaluation_id))
+    ).scalars().first()
+    judge = None
+    if evaluation is not None:
+        judge = (
+            await db.execute(select(Judge).where(Judge.id == evaluation.judge_id))
+        ).scalars().first()
+
+    event_id = anomaly.event_id
+    event_name = event.name if event else "your event"
+
+    # Rebuild the score context from the description's persisted numbers isn't
+    # reliable, so re-derive what we can from the anomaly's own fields. The
+    # description already carries the human-readable figures.
+
+    if not approved:
+        anomaly.review_status = AnomalyReviewStatus.rejected.value
+        anomaly.is_resolved = True
+        anomaly.resolved_at = datetime.now(timezone.utc)
+        await db.commit()
+        # Clear the organizer's glow live (#4): the dismissed anomaly is gone.
+        try:
+            from app.services.event_bus import safe_publish
+
+            if event and event.organizer_id:
+                await safe_publish(
+                    [str(event.organizer_id)],
+                    {"type": "anomaly", "event_id": str(event_id), "anomaly_id": str(anomaly.id)},
+                )
+        except Exception as exc:
+            print(f"[anomaly_service] dismiss signal failed: {exc}")
+        return
+
+    anomaly.review_status = AnomalyReviewStatus.approved.value
+    await db.commit()
+
+    # Organizer report email — a proper write-up, not just an in-app ping.
+    if event and event.organizer_id:
+        organizer_link = (
+            f"{settings.FRONTEND_URL.rstrip('/')}/organizer/events/{event_id}/anomalies"
+        )
+        from app.models.user import User
+
+        organizer = (
+            await db.execute(select(User).where(User.id == event.organizer_id))
+        ).scalars().first()
+        organizer_email = getattr(organizer, "email", None) if organizer else None
+        if organizer_email:
+            judge_label = (judge.name or judge.email) if judge else "a judge"
+            o_subject = f"[EKAM] Scoring anomaly confirmed — {event_name}"
+            o_text = (
+                f"You approved an automated scoring anomaly flagged for "
+                f"\"{event_name}\".\n\n"
+                f"  Judge: {judge_label}\n"
+                f"  {anomaly.description}\n\n"
+                f"The judge has been asked to review and correct it.\n"
+                f"Review all anomalies here:\n  {organizer_link}\n\n"
+                f"Team EKAM"
+            )
+            o_html = (
+                f"<p>You approved an automated scoring anomaly flagged for "
+                f"<strong>{event_name}</strong>.</p>"
+                f"<ul><li><strong>Judge:</strong> {judge_label}</li>"
+                f"<li>{anomaly.description}</li></ul>"
+                f"<p>The judge has been asked to review and correct it.</p>"
+                f"<p><a href=\"{organizer_link}\">Review all anomalies</a></p>"
+                f"<p>Team EKAM</p>"
+            )
+            await send_direct_email(
+                to=organizer_email, subject=o_subject, body_html=o_html, body_text=o_text
+            )
+
+    # Notify the judge (in-app + email with a magic link to their fix-it page).
     if judge:
-        submission_id = anomaly_payload["submission_id"]
-        review_link = (
-            f"{settings.FRONTEND_URL.rstrip('/')}/judge/evaluate/{submission_id}"
-        )
-
+        judge_page = "/judge/anomalies"
         await create_notification(
             db=db,
             event_id=str(event_id),
@@ -344,54 +454,69 @@ async def _create_live_anomaly_notification(
             title="Please review a flagged evaluation",
             message=(
                 "One of your evaluations was flagged as a possible scoring "
-                "anomaly. Please review and update the score if needed."
+                "anomaly and confirmed for review. Open your anomalies page to "
+                "review and fix it."
             ),
             notification_type=NotificationType.action_required,
-            action_link=review_link,
+            action_link=judge_page,
         )
 
         if getattr(judge, "email", None):
-            event_name = event.name if event else "your event"
             judge_name = judge.name or judge.email.split("@")[0]
+            try:
+                from app.services.magic_link_service import generate_magic_link
+
+                review_link = await generate_magic_link(
+                    db, str(judge.id), "judge", str(event_id), redirect_path=judge_page
+                )
+            except Exception as exc:
+                print(f"[anomaly] judge magic link failed: {exc}")
+                review_link = f"{settings.FRONTEND_URL.rstrip('/')}{judge_page}"
 
             subject = f"[EKAM] Scoring anomaly flagged — {event_name}"
             body_text = (
                 f"Hello {judge_name},\n\n"
-                f"Our automated scoring review (IsolationForest ML model) "
-                f"flagged one of your evaluations for \"{event_name}\" as a "
-                f"possible anomaly.\n\n"
-                f"  Your score:    {anomaly_payload['score']:.1f}\n"
-                f"  Panel average: {anomaly_payload['panel_average']:.1f}\n"
-                f"  Your average:  {anomaly_payload['judge_average']:.1f}\n\n"
-                f"This does not mean the score is wrong — please review the "
-                f"submission and update your score if appropriate:\n\n"
+                f"Our automated scoring review flagged one of your evaluations "
+                f"for \"{event_name}\" as a possible anomaly, and the organizer "
+                f"asked you to review it.\n\n"
+                f"  {anomaly.description}\n\n"
+                f"This does not mean the score is wrong — open your anomalies "
+                f"page (one-click login) to review and fix any flagged scores:\n\n"
                 f"  {review_link}\n\n"
                 f"Thank you,\nTeam EKAM"
             )
             body_html = (
                 f"<p>Hello {judge_name},</p>"
-                f"<p>Our automated scoring review (IsolationForest ML model) "
-                f"flagged one of your evaluations for "
-                f"<strong>{event_name}</strong> as a possible anomaly.</p>"
-                f"<ul>"
-                f"<li><strong>Your score:</strong> {anomaly_payload['score']:.1f}</li>"
-                f"<li><strong>Panel average:</strong> {anomaly_payload['panel_average']:.1f}</li>"
-                f"<li><strong>Your average:</strong> {anomaly_payload['judge_average']:.1f}</li>"
-                f"</ul>"
-                f"<p>This does not mean the score is wrong — please review the "
-                f"submission and update your score if appropriate:</p>"
-                f"<p><a href=\"{review_link}\">Review this evaluation</a></p>"
+                f"<p>Our automated scoring review flagged one of your evaluations "
+                f"for <strong>{event_name}</strong> as a possible anomaly, and the "
+                f"organizer asked you to review it.</p>"
+                f"<p>{anomaly.description}</p>"
+                f"<p>This does not mean the score is wrong — open your anomalies "
+                f"page to review and fix any flagged scores:</p>"
+                f"<p><a href=\"{review_link}\">Review my flagged evaluations</a></p>"
                 f"<p>Thank you,<br/>Team EKAM</p>"
             )
-
             await send_direct_email(
-                to=judge.email,
-                subject=subject,
-                body_html=body_html,
-                body_text=body_text,
+                to=judge.email, subject=subject, body_html=body_html, body_text=body_text
             )
 
-    return anomaly
+    # Push the live "anomaly" signal so the judge's page reveals it and the
+    # organizer's badge reflects the now-active anomaly (SSE). Best-effort.
+    try:
+        from app.services.event_bus import safe_publish
+
+        targets = []
+        if event and event.organizer_id:
+            targets.append(str(event.organizer_id))
+        if judge:
+            targets.append(str(judge.id))
+        if targets:
+            await safe_publish(
+                targets,
+                {"type": "anomaly", "event_id": str(event_id), "anomaly_id": str(anomaly.id)},
+            )
+    except Exception as exc:
+        print(f"[anomaly_service] anomaly signal failed: {exc}")
 
 
 async def _create_event_report(

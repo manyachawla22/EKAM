@@ -24,6 +24,17 @@ class AnomalyType(str, enum.Enum):
     time_anomaly = "time_anomaly"
 
 
+class AnomalyReviewStatus(str, enum.Enum):
+    # Detected but awaiting the organizer's call (an approval request is pending).
+    # No emails sent, not yet visible to the judge.
+    pending = "pending"
+    # Organizer approved → considered: judge + organizer emailed, shown on the
+    # judge's anomalies page.
+    approved = "approved"
+    # Organizer dismissed → not worth considering. No emails, hidden from the judge.
+    rejected = "rejected"
+
+
 class Anomaly(Base):
     __tablename__ = "anomalies"
 
@@ -62,6 +73,17 @@ class Anomaly(Base):
         nullable=False
     )
     
+    # Organizer-approval gate (#2): an anomaly is only emailed to the judge and
+    # shown on their fix-it page once the organizer approves it. Stored as a
+    # plain string (not a PG enum) so adding it needs no enum-type migration.
+    review_status = Column(
+        String,
+        default=AnomalyReviewStatus.pending.value,
+        server_default=AnomalyReviewStatus.pending.value,
+        nullable=False,
+        index=True,
+    )
+
     is_resolved = Column(
         Boolean,
         default=False,

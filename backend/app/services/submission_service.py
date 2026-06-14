@@ -96,7 +96,20 @@ async def create_submission_service(
                     detail="Your team did not advance and can no longer submit for this event.",
                 )
 
-        # The submission window for this round closes once the pipeline moves
+        # Time gate: reject submissions outside the round's [start_date, end_date]
+        # window. This is independent of the pipeline gate below — "no late
+        # writes" (time) vs "advance when ready" (pipeline) are separate
+        # guarantees. No dates configured → not time-gated.
+        from app.services.time_enforcement import submission_window_state
+
+        time_ok, time_reason = submission_window_state(round_obj)
+        if not time_ok:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=time_reason,
+            )
+
+        # The submission window for this round also closes once the pipeline moves
         # past its submission step.
         from app.services.pipeline_service import is_round_submission_closed
 
@@ -140,7 +153,8 @@ async def create_submission_service(
 
 async def _autopropose_after_submission(db: AsyncSession, round_obj) -> None:
     """When all active teams have submitted for the round, the pipeline
-    auto-proposes the next transition. Best-effort."""
+    auto-proposes the next transition. Best-effort. Also pushes a live
+    'submission' signal so judge/organizer views refresh without a manual reload."""
     if not round_obj or not round_obj.event_id:
         return
     try:
@@ -148,6 +162,31 @@ async def _autopropose_after_submission(db: AsyncSession, round_obj) -> None:
         await autopropose(db, str(round_obj.event_id))
     except Exception as exc:
         print(f"[submission_service] autopropose failed: {exc}")
+
+    # Live push to the event's judges + organizer so their submission lists update
+    # in real time (#12). Best-effort — never break the submission path.
+    try:
+        from app.services.event_bus import safe_publish
+        from app.models.judge import Judge
+        from app.models.event import Event
+
+        judge_ids = (await db.execute(
+            select(Judge.id).where(Judge.event_id == round_obj.event_id)
+        )).scalars().all()
+        targets = [str(j) for j in judge_ids]
+        event = (
+            await db.execute(select(Event).where(Event.id == round_obj.event_id))
+        ).scalars().first()
+        if event and event.organizer_id:
+            targets.append(str(event.organizer_id))
+        if targets:
+            await safe_publish(targets, {
+                "type": "submission",
+                "event_id": str(round_obj.event_id),
+                "round_id": str(round_obj.id),
+            })
+    except Exception as exc:
+        print(f"[submission_service] submission signal failed: {exc}")
 
 
 async def list_submissions_service(

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2 } from "lucide-react";
 import { getPipelineState } from "@/lib/api";
 import { useAutoRefresh } from "@/lib/useAutoRefresh";
+import { useEventStream } from "@/lib/useEventStream";
 import type { PipelineState } from "@/types";
 
 /**
@@ -26,9 +27,12 @@ export default function DynamicPipeline({ eventId }: { eventId: string }) {
     load();
   }, [load]);
 
-  // Poll faster than the default so a freshly-approved stage transition shows up
-  // promptly instead of lagging behind the Approvals page by up to 12s.
-  useAutoRefresh(load, 4000);
+  // Live push: a pipeline advance or an approval action reloads the pipeline
+  // instantly. The poll below is now just a slow safety net.
+  useEventStream(["pipeline", "approval"], load);
+
+  // Slow polling fallback for dropped streams / sessions without an EKAM JWT.
+  useAutoRefresh(load, 60000);
 
   if (!state || state.steps.length === 0) return null;
 

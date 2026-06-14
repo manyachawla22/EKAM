@@ -50,6 +50,11 @@ export interface Event {
   participant_count?: number;
   team_count?: number;
   submission_count?: number;
+  registration_opens_at?: string | null;
+  registration_closes_at?: string | null;
+  registration_form_fields?: RegistrationFormField[] | null;
+  participants_model?: string | null;
+  individual_registration_allowed?: boolean | null;
 }
 
 export interface Round {
@@ -60,6 +65,7 @@ export interface Round {
   status: RoundStatus;
   start_date?: string;
   end_date?: string;
+  cutoff_score?: number | null; // single source of truth for advancement (#13)
   created_at?: string;
 }
 
@@ -211,7 +217,10 @@ export type ApprovalRequestType =
   | "email_batch"
   | "leaderboard_publish"
   | "stage_transition"
-  | "progression";
+  | "progression"
+  | "registration_form"
+  | "event_deploy"
+  | "anomaly_review";
 
 export type ApprovalStatus =
   | "draft"
@@ -285,10 +294,40 @@ export interface Anomaly {
   anomaly_type: AnomalyType;
   severity: number; // 0.0 - 1.0
   description: string;
+  // Organizer-approval gate (#2): pending = awaiting organizer; approved =
+  // considered (judge notified); rejected = dismissed.
+  review_status?: "pending" | "approved" | "rejected";
   is_resolved: boolean;
   resolved_by?: string | null;
   resolved_at?: string | null;
   created_at: string;
+}
+
+// One rubric criterion within a judge's flagged evaluation, with their score.
+export interface MyAnomalyRubricItem {
+  id: string;
+  name: string;
+  max_score: number;
+  description?: string | null;
+  my_score: number;
+}
+
+// A judge's own anomaly, enriched for the private fix-it page.
+export interface MyAnomaly {
+  id: string;
+  event_id: string;
+  anomaly_type: AnomalyType;
+  severity: number;
+  description: string;
+  is_resolved: boolean;
+  created_at: string | null;
+  submission_id: string;
+  round_id: string;
+  round_name: string;
+  team_name: string | null;
+  my_total_score: number | null;
+  panel_average: number | null;
+  rubric: MyAnomalyRubricItem[];
 }
 
 // ─── API Request Bodies ────────────────────────────────────────────────────────
@@ -476,6 +515,63 @@ export interface AssessmentGuide {
   criteria_guides: AssessmentGuideCriterion[];
   key_questions: string[];
   generated_by?: "ai" | "rules";
+}
+
+// ─── Public registration page (Task 6) ───────────────────────────────────────
+
+export interface RegistrationFormField {
+  field_id: string;
+  label: string;
+  type: string; // text | email | tel | url | select | textarea | number | date
+  required?: boolean;
+  options?: string[];
+  unique_per_event?: boolean;
+}
+
+export interface PublicEventCard {
+  hash: string;
+  name: string;
+  type: string;
+  description?: string | null;
+  registration_open: boolean;
+  registration_closes_at?: string | null;
+  format: string; // "individual" | "team"
+  team_registration: boolean;
+}
+
+export interface PublicRoundSummary {
+  name: string;
+  start_date?: string | null;
+  end_date?: string | null;
+}
+
+export interface PublicEventDetail extends PublicEventCard {
+  registration_form_fields: RegistrationFormField[];
+  participants_model: string;
+  individual_registration_allowed: boolean;
+  min_team_size: number;
+  max_team_size: number;
+  rounds: PublicRoundSummary[];
+}
+
+export interface ResumeUploadResponse {
+  url: string;
+  name: string;
+  prefill: Record<string, unknown>;
+}
+
+export interface PublicMemberRegistration {
+  answers: Record<string, unknown>;
+  resume_url: string;
+  is_leader?: boolean;
+}
+
+export interface PublicRegisterRequest {
+  captcha_token?: string;
+  answers?: Record<string, unknown>;
+  resume_url?: string;
+  team_name?: string;
+  members?: PublicMemberRegistration[];
 }
 
 // ─── API Response Wrappers ────────────────────────────────────────────────────

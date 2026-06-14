@@ -33,6 +33,9 @@ class EmailStatus(str, enum.Enum):
     approved = "approved"
     sent = "sent"
     failed = "failed"
+    # Manually parked so it is never (re)sent — e.g. a stale/superseded duplicate.
+    # Excluded from the failed-draft retry path.
+    cancelled = "cancelled"
 
 
 class EmailDraft(Base):
@@ -98,6 +101,14 @@ class EmailDraft(Base):
 
     sent_at = Column(
         DateTime(timezone=True),
+        nullable=True
+    )
+
+    # Last delivery error (e.g. the Resend exception text) when status == failed.
+    # Cleared on a successful send. Lets failures be diagnosed from the DB instead
+    # of only the backend console.
+    last_error = Column(
+        String,
         nullable=True
     )
 

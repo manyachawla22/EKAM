@@ -32,6 +32,7 @@ import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import DynamicPipeline from "@/components/pipeline/DynamicPipeline";
+import RegistrationFormEditor from "@/components/organizer/RegistrationFormEditor";
 
 const STATUSES: EventStatus[] = ["draft", "active", "completed", "archived"];
 
@@ -92,7 +93,6 @@ export default function EventDetailPage() {
   // Stage action state
   const [teamSize, setTeamSize] = useState(4);
   const [selectedRound, setSelectedRound] = useState("");
-  const [cutoffScore, setCutoffScore] = useState(60);
   const [actionLoading, setActionLoading] = useState(false);
 
   const fetchAll = async () => {
@@ -409,14 +409,13 @@ export default function EventDetailPage() {
             )}
             {isScoringStep && (
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-                <label style={{ fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>Qualifying cutoff:</label>
-                <input type="number" min={0} max={100} value={cutoffScore} onChange={(e) => setCutoffScore(Number(e.target.value))}
-                  style={{ ...inputBase, width: "5rem" }} />
-                <Button variant="primary" onClick={() => handleAdvancePipeline(cutoffScore)} loading={actionLoading}>
-                  Advance to {nextStep?.label ?? "next step"} →
+                <Button variant="primary" onClick={() => handleAdvancePipeline()} loading={actionLoading}>
+                  Propose advancement for approval →
                 </Button>
                 <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
-                  Teams at or above the cutoff advance; the rest are eliminated.
+                  Set the qualifying cutoff and approve it in the{" "}
+                  <Link href={`/organizer/events/${id}/approvals`} style={{ color: "#6366f1", textDecoration: "underline" }}>Approvals</Link>{" "}
+                  panel — teams at or above it advance; the rest are eliminated.
                 </span>
               </div>
             )}
@@ -523,6 +522,9 @@ export default function EventDetailPage() {
             </Button>
           </form>
         </div>
+
+        {/* Public registration form editor (approval-gated) */}
+        <RegistrationFormEditor eventId={id} initialFields={event.registration_form_fields} />
 
         {/* Pending approvals */}
         {(dashboard?.pending_approvals ?? []).length > 0 && (

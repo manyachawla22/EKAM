@@ -40,7 +40,12 @@ export default function ApprovalEditor({ eventId, approval, teams, judges, parti
   const [saving, setSaving] = useState(false);
   const [board, setBoard] = useState<Submission[]>([]);
 
-  useEffect(() => setPayload(approval.payload || {}), [approval]);
+  // Reset the editor only when a DIFFERENT approval is opened — NOT on every
+  // background refetch of the same approval. Live SSE updates change the parent's
+  // approval object reference frequently; depending on `approval` here would wipe
+  // the organizer's in-progress edits (e.g. team moves) mid-edit (#8).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setPayload(approval.payload || {}), [approval.id]);
 
   const teamName = useMemo(() => {
     const m = new Map(teams.map((t) => [t.id, t.name]));
@@ -274,6 +279,41 @@ export default function ApprovalEditor({ eventId, approval, teams, judges, parti
           {(payload.recipient_count as number) ?? "?"} recipient(s)
         </span>
         <SaveBar saving={saving} onSave={() => save(payload)} />
+      </div>
+    );
+  }
+
+  // ── anomaly_review (read-only): organizer decides if a flagged score is worth
+  //     considering BEFORE the judge is notified (#2) ──
+  if (type === "anomaly_review") {
+    const num = (k: string) => {
+      const v = payload[k];
+      return typeof v === "number" ? v.toFixed(1) : "—";
+    };
+    const stat = (label: string, value: string) => (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }}>
+        <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.4)" }}>{label}</span>
+        <span style={{ fontSize: "0.95rem", fontWeight: 700, color: "#fff" }}>{value}</span>
+      </div>
+    );
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", marginTop: "0.6rem" }}>
+        <p style={{ margin: 0, fontSize: "0.8rem", color: "rgba(255,255,255,0.7)", lineHeight: 1.5 }}>
+          Our automated review flagged an evaluation by{" "}
+          <strong style={{ color: "#fff" }}>{(payload.judge_name as string) || "a judge"}</strong>.
+          Approve to ask the judge to review &amp; correct it (they&apos;ll be notified);
+          reject to dismiss it — the judge is never told.
+        </p>
+        {payload.description ? (
+          <p style={{ margin: 0, fontSize: "0.78rem", color: "rgba(255,255,255,0.55)" }}>
+            {payload.description as string}
+          </p>
+        ) : null}
+        <div style={{ ...rowBox, justifyContent: "space-between" }}>
+          {stat("Judge score", num("score"))}
+          {stat("Panel avg", num("panel_average"))}
+          {stat("Judge avg", num("judge_average"))}
+        </div>
       </div>
     );
   }

@@ -38,6 +38,9 @@ const TYPE_LABEL: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard Publish",
   stage_transition: "Stage Transition",
   progression: "Round Progression",
+  registration_form: "Registration Form",
+  event_deploy: "Event Deployment",
+  anomaly_review: "Scoring Anomaly",
 };
 
 const STATUS_STYLE: Record<
@@ -281,7 +284,6 @@ export default function ApprovalsPage() {
     null
   );
   const [reviewNotes, setReviewNotes] = useState("");
-  const [reviewCutoff, setReviewCutoff] = useState(50);
   const [submittingReview, setSubmittingReview] = useState(false);
 
   // Lookup data so proposals can show real names (and editors offer choices).
@@ -339,13 +341,12 @@ export default function ApprovalsPage() {
     if (!reviewTarget || !reviewAction || !id) return;
     setSubmittingReview(true);
     try {
+      // The advancement cutoff is set in ONE place — the advancement approval
+      // editor (payload.cutoff_score) — not here, so approving no longer re-asks
+      // for it (#13).
       await reviewApproval(id, reviewTarget.id, {
         action: reviewAction,
         review_notes: reviewNotes || undefined,
-        cutoff_score:
-          reviewAction === "approved" && isAdvancementReview(reviewTarget)
-            ? reviewCutoff
-            : undefined,
       });
       toast.success(
         reviewAction === "approved" ? "Approved" : "Rejected"
@@ -663,22 +664,10 @@ export default function ApprovalsPage() {
               : "Rejecting cancels the proposal. The requester will need to re-trigger if they want to retry."}
           </div>
           {reviewAction === "approved" && isAdvancementReview(reviewTarget) && (
-            <div>
-              <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.8rem", color: "rgba(255,255,255,0.6)" }}>
-                Qualifying cutoff score
-              </label>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={reviewCutoff}
-                onChange={(e) => setReviewCutoff(Number(e.target.value))}
-                style={{ width: "100%", borderRadius: "0.5rem", border: "1px solid #222", background: "#0d0d0d", padding: "0.5rem 0.75rem", fontSize: "0.875rem", color: "#fff", outline: "none" }}
-              />
-              <p style={{ marginTop: "0.3rem", fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
-                Teams scoring at or above this advance; the rest receive a failure email and are blocked from later rounds.
-              </p>
-            </div>
+            <p style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)" }}>
+              The qualifying cutoff is the one set on this advancement proposal.
+              Edit it on the proposal above before approving if needed.
+            </p>
           )}
           <Textarea
             label="Notes (optional)"

@@ -9,6 +9,7 @@ import {
   reviewApproval,
   autoFormTeams,
 } from "@/lib/api";
+import { useEventStream } from "@/lib/useEventStream";
 import type { ApprovalRequest, ApprovalRequestType } from "@/types";
 
 const LABEL: Record<ApprovalRequestType, string> = {
@@ -18,6 +19,9 @@ const LABEL: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard Publication",
   stage_transition: "Stage Transition",
   progression: "Progression",
+  registration_form: "Registration Form",
+  event_deploy: "Event Deployment",
+  anomaly_review: "Scoring Anomaly",
 };
 
 const DESCRIPTION: Record<ApprovalRequestType, string> = {
@@ -27,6 +31,9 @@ const DESCRIPTION: Record<ApprovalRequestType, string> = {
   leaderboard_publish: "Leaderboard is ready to publish.",
   stage_transition: "A stage transition has been proposed.",
   progression: "A progression proposal is pending review.",
+  registration_form: "A public registration form is ready. Approve to publish it.",
+  event_deploy: "An AI-designed event is ready. Approve to publish the event and its registration form.",
+  anomaly_review: "A scoring anomaly was flagged. Approve to ask the judge to review it, or reject to dismiss.",
 };
 
 interface Props {
@@ -50,14 +57,19 @@ export default function ApprovalsPanel({ eventId }: Props) {
     }
   }, [eventId]);
 
-  // Poll every 10 seconds
+  // Live updates arrive via SSE (useEventStream below); this poll is a slow
+  // safety net for dropped streams / non-JWT sessions.
   useEffect(() => {
     fetchApprovals();
-    intervalRef.current = setInterval(fetchApprovals, 10_000);
+    intervalRef.current = setInterval(fetchApprovals, 60_000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [fetchApprovals]);
+
+  // Live push: a new/approved/rejected approval or a pipeline advance means the
+  // pending list likely changed — refetch immediately.
+  useEventStream(["approval", "pipeline"], fetchApprovals);
 
   const handleApprove = async (approval: ApprovalRequest) => {
     setActionLoading(approval.id);

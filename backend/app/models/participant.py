@@ -13,7 +13,7 @@ from sqlalchemy import (
     ARRAY
 )
 
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import UniqueConstraint
@@ -61,6 +61,15 @@ class Participant(Base):
     skills = Column(ARRAY(String), default=[])
 
     ats_score = Column(Float, nullable=True)
+
+    # ── Public registration page (Task 6) ───────────────────────────────────
+    # Full set of answers to the event's dynamic registration_form_fields,
+    # keyed by field_id. The known fields (name/email/phone/institution) are
+    # also mapped onto the typed columns above; this holds the complete record.
+    registration_data = Column(JSONB, nullable=True)
+
+    # URL of the uploaded resume PDF (served from /submissions/files/...).
+    resume_url = Column(String, nullable=True)
 
     status = Column(
         Enum(RegistrationStatus),

@@ -69,6 +69,33 @@ async def startup_db_client():
     except Exception as e:
         print(f"[startup] panel-average backfill skipped: {e}")
 
+@app.on_event("startup")
+async def start_deadline_scheduler():
+    """Background timer that enforces time even when no request comes in.
+
+    Every 60s it sweeps active events and disqualifies non-submitters whose
+    current round's submission deadline has passed. Idempotent and best-effort —
+    a single failed tick never stops the loop. Minimal by design (no Celery /
+    APScheduler); swap to APScheduler if cron-precise timing is ever needed.
+    """
+    import asyncio
+
+    async def _loop():
+        from app.core.database import AsyncSessionLocal
+        from app.services.time_enforcement import run_deadline_sweep_once
+
+        while True:
+            try:
+                async with AsyncSessionLocal() as session:
+                    await run_deadline_sweep_once(session)
+            except Exception as exc:
+                print(f"[scheduler] deadline sweep tick failed: {exc}")
+            await asyncio.sleep(60)
+
+    asyncio.create_task(_loop())
+    print("[scheduler] deadline sweep started (60s interval)")
+
+
 @app.get("/")
 def root():
     return {"message": "Welcome to EKAM API"}

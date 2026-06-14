@@ -167,6 +167,7 @@ async def finalize_winners(
     await db.commit()
 
     sent = 0
+    winner_emails: set[str] = set()  # so they don't also get a participation cert
     for w in winners:
         rank = int(w.get("rank") or 0)
         team_id = w.get("team_id")
@@ -177,6 +178,7 @@ async def finalize_winners(
         members = await _team_members(db, team_id)
         if not members:
             continue
+        winner_emails.update(email for _, email in members if email)
 
         place = _ordinal(rank) if rank else "a winning"
         team_name = w.get("team_name") or "your team"
@@ -231,6 +233,7 @@ async def finalize_winners(
             db=db,
             requested_by=requested_by,
             achievement="Participation",
+            exclude_emails=winner_emails,
         )
     except Exception as exc:
         print(f"[winner_service] participation certificate distribution failed: {exc}")

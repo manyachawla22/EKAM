@@ -60,6 +60,14 @@ class Team(Base):
 
     name = Column(String, nullable=False)
 
+    # Set when a team misses a submission deadline (or is otherwise removed for
+    # cause). Disqualified teams are also added to EventPipeline.eliminated_team_ids
+    # so the existing exclusion machinery keeps them out of later rounds and
+    # leaderboards. Reversible via the round-window "reopen" path.
+    disqualified = Column(Boolean, default=False, nullable=False)
+
+    disqualified_reason = Column(String, nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now()

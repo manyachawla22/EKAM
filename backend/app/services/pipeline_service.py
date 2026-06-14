@@ -5,13 +5,15 @@ Handles stage transitions and progression logic for teams.
 Integrates with the Approval Workflow.
 """
 
+from datetime import datetime, timezone
+
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.approval import ApprovalRequest, ApprovalStatus, RequestType
 from app.models.event import Event, EventStage, EventStatus, Round, RoundStatus
-from app.models.participant import Participant
+from app.models.participant import Participant, RegistrationStatus
 from app.models.judge import Judge, JudgeAssignment
 from app.models.pipeline import EventPipeline
 from app.models.submission import Submission, Evaluation
@@ -372,10 +374,29 @@ async def _condition_met(
     eliminated: list[str],
 ) -> bool:
     if step_id == "registration":
-        n = (await db.execute(
-            select(func.count(Participant.id)).where(Participant.event_id == event.id)
+        # Registration is "ready to advance" only when it is actually OVER:
+        #   (a) confirmed-participant capacity is reached, OR
+        #   (b) the registration window has closed (registration_closes_at passed).
+        # Previously this was `n > 0`, which proposed a stage transition on the
+        # first registration — and again on every subsequent one (#7).
+        confirmed = (await db.execute(
+            select(func.count(Participant.id)).where(
+                Participant.event_id == event.id,
+                Participant.status == RegistrationStatus.confirmed,
+            )
         )).scalar() or 0
-        return n > 0
+        if confirmed == 0:
+            return False
+        cap = event.max_participants or 0
+        if cap and confirmed >= cap:
+            return True
+        closes_at = event.registration_closes_at
+        if closes_at is not None:
+            if closes_at.tzinfo is None:
+                closes_at = closes_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= closes_at:
+                return True
+        return False
 
     if step_id == "team_formation":
         n = (await db.execute(
@@ -646,6 +667,23 @@ async def advance_pipeline(db: AsyncSession, event_id, cutoff_score: float = 0.0
             ),
         }
 
+    # Scoring advancement is cutoff-gated and eliminates teams — route it to the
+    # approval queue too, so the qualifying cutoff is set/reviewed in exactly ONE
+    # place (the advancement approval), never applied by an unreviewed direct
+    # advance (#13). autopropose creates the approval; the cutoff is edited there.
+    if current.endswith(":advancement"):
+        await autopropose(db, event_id)
+        return {
+            "advanced": False,
+            "requires_approval": True,
+            "current_step": current,
+            "next_step": next_step,
+            "message": (
+                "Advancement requires approval. Set the qualifying cutoff and "
+                "approve it in the Approvals panel."
+            ),
+        }
+
     rounds = await _ordered_rounds(db, event_id)
     steps = build_steps(rounds)
     current_obj = next((s for s in steps if s["id"] == current), {})
@@ -741,10 +779,21 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
         for tid in failing:
             if str(tid) not in eliminated:
                 eliminated.append(str(tid))
-        try:
-            await _email_round_results(db, event, rid, advancing, failing)
-        except Exception as exc:
-            print(f"[pipeline_service] round-result emails failed: {exc}")
+        # Persist the cutoff used as this round's single source of truth (#13), so
+        # leaderboard/pipeline/approvals all display the same value read-only.
+        rnd = next((r for r in rounds if str(r.id) == str(rid)), None)
+        if rnd is not None:
+            rnd.cutoff_score = cutoff
+        # Suppress round-result emails for the FINAL round's advancement: there is
+        # no "next round", and winners are announced (with their own email) via the
+        # winner-announcement step. Sending "you're through to the next round" here
+        # would be wrong and double up with the winner announcement.
+        is_final_round = bool(rounds) and str(rounds[-1].id) == str(rid)
+        if not is_final_round:
+            try:
+                await _email_round_results(db, event, rid, advancing, failing)
+            except Exception as exc:
+                print(f"[pipeline_service] round-result emails failed: {exc}")
 
     # Winner announcement: announce the winners the organizer reviewed when they
     # approved this transition. We only reach here via an approved approval (the
@@ -781,6 +830,24 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
         event.status = EventStatus.completed
 
     await db.commit()
+
+    # Push a live "pipeline" signal to the organizer and all participants so
+    # their pipeline views advance instantly (SSE). Best-effort.
+    try:
+        from app.services.event_bus import safe_publish
+
+        participant_ids = (
+            await db.execute(
+                select(Participant.id).where(Participant.event_id == event_id)
+            )
+        ).scalars().all()
+        targets = [str(event.organizer_id)] + [str(pid) for pid in participant_ids]
+        await safe_publish(
+            targets,
+            {"type": "pipeline", "event_id": str(event_id), "current_step": next_step},
+        )
+    except Exception as exc:
+        print(f"[pipeline_service] pipeline signal failed: {exc}")
 
     # Keep each round's status column in step with the new cursor position so
     # the judge/organizer UIs show done/active/upcoming correctly.

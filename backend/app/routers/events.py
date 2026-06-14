@@ -3,13 +3,16 @@ EKAM Events Router
 """
 
 from uuid import UUID
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, status, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.database import get_db
+from app.models.event import Event as EventModel
 
 from app.middleware.auth import require_actor_type, get_current_actor, require_event_access
 from app.core.auth_context import AuthContext
@@ -40,6 +43,31 @@ class WinnerEntry(BaseModel):
 
 class WinnersConfirm(BaseModel):
     winners: List[WinnerEntry]
+
+
+class RegistrationWindowUpdate(BaseModel):
+    # Pass either/both; null clears that bound (making it unbounded on that side).
+    registration_opens_at: Optional[datetime] = None
+    registration_closes_at: Optional[datetime] = None
+
+
+class RegistrationFormField(BaseModel):
+    field_id: str
+    label: str
+    type: str = "text"  # text|email|tel|url|select|textarea|number|date
+    required: bool = False
+    options: Optional[List[str]] = None
+    unique_per_event: Optional[bool] = None
+
+
+class RegistrationFormProposal(BaseModel):
+    """Organizer's manual registration-form edit. Publishing it is approval-gated
+    (creates a `registration_form` ApprovalRequest) — same human-in-the-loop gate
+    the rest of the app uses."""
+    fields: List[RegistrationFormField]
+    participants_model: Optional[str] = None  # "individual" | "team"
+    individual_registration_allowed: Optional[bool] = None
+
 
 router = APIRouter(
     prefix="/events",
@@ -112,6 +140,79 @@ async def confirm_winners(
     for w in winners:
         w["team_id"] = str(w["team_id"])
     return await finalize_winners(db, event_id, winners, requested_by=str(auth.actor_id))
+
+
+@router.patch(
+    "/{event_id}/registration-window",
+    response_model=Event,
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def update_registration_window(
+    event_id: UUID,
+    body: RegistrationWindowUpdate,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Organizer sets/postpones the event's registration window. Times should be
+    sent as ISO8601 (UTC or with an offset); they're stored as-is (tz-aware)."""
+    event = (
+        await db.execute(select(EventModel).where(EventModel.id == event_id))
+    ).scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    fields = body.model_dump(exclude_unset=True)
+    if "registration_opens_at" in fields:
+        event.registration_opens_at = fields["registration_opens_at"]
+    if "registration_closes_at" in fields:
+        event.registration_closes_at = fields["registration_closes_at"]
+
+    await db.commit()
+    await db.refresh(event)
+    return event
+
+
+@router.post(
+    "/{event_id}/registration-form",
+    dependencies=[
+        Depends(require_actor_type(["organizer"])),
+        Depends(require_event_access("event_id")),
+    ],
+)
+async def propose_registration_form(
+    event_id: UUID,
+    body: RegistrationFormProposal,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Propose a public registration form (manual editor). Creates a pending
+    `registration_form` approval; the form goes live only once approved from the
+    Approvals panel. Returns the created approval request."""
+    from app.models.approval import RequestType
+    from app.services.approval_service import create_approval_request
+
+    event = (
+        await db.execute(select(EventModel).where(EventModel.id == event_id))
+    ).scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    payload = body.model_dump(exclude_none=True)
+    approval = await create_approval_request(
+        db,
+        event_id=str(event_id),
+        request_type=RequestType.registration_form,
+        payload=payload,
+        requested_by=str(auth.actor_id),
+    )
+    return {
+        "approval_id": str(approval.id),
+        "status": approval.status.value,
+        "message": "Registration form submitted for approval.",
+    }
 
 
 @router.get("/{event_id}", response_model=Event)

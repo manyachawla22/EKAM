@@ -10,6 +10,7 @@ import groq as _groq
 from groq import Groq
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -194,12 +195,13 @@ OUTPUT SCHEMA:
   ],
   "judging_panel": {
     "judges": [
-      {"judge_id":"judge_1","name":"Actual Name Only","company":"Company","expertise":["AI"]}
+      {"judge_id":"judge_1","name":"Actual Name Only","company":"Company","email":"judge@example.com","expertise":["AI"]}
     ]
   }
 }
 CRITICAL: Only populate judges if the organizer gives REAL names (e.g. "Akshat Sharma from Google").
-If the message only mentions a count ("3 judges") or companies without names, omit judging_panel entirely — do NOT create placeholder entries like "Judge 1"."""
+If the message only mentions a count ("3 judges") or companies without names, omit judging_panel entirely — do NOT create placeholder entries like "Judge 1".
+ALWAYS capture each judge's "email" when an address is present, regardless of the order it appears in (e.g. "Aarav Mehta, AI/ML, aarav@x.com" → email "aarav@x.com"). The email is required to send the judge their login link."""
 
 
 def _sec3_system() -> str:
@@ -253,7 +255,8 @@ Field: contact → reply "abc@gmail.com 9876543210" → {{"core":{{"contact":{{"
 Field: registration → reply "opens today closes in 7 days" → {{"timeline":{{"registration":{{"opens_at":"{today}T00:00:00+05:30","closes_at":"COMPUTED_DATE"}}}}}}
 Field: teams → reply "50 teams 4 each, up to 200 participants" → {{"participants":{{"capacity":{{"max_teams":50,"max_participants":200}},"team":{{"min_size":4,"max_size":4}}}}}}
   (Always capture max_participants when a total participant/registration cap is given, e.g. "max 2 participants" → capacity.max_participants = 2. If only team count and size are given, you may compute max_participants = max_teams × max_size.)
-Field: judges → reply "Aarav Mehta from Google, AI expert" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","expertise":["AI"]}}]}}}}
+Field: judges → reply "Aarav Mehta from Google, AI expert, aarav@google.com" → {{"judging_panel":{{"judges":[{{"judge_id":"judge_1","name":"Aarav Mehta","company":"Google","email":"aarav@google.com","expertise":["AI"]}}]}}}}
+  Capture "email" whenever an address appears, in ANY field order (name/expertise/email). Omit email only if none is given.
 Field: rounds → extract full rounds array as {{"rounds":[...]}} with scoring, deliverables, advancement.
 Field: prizes → reply "total 10k, 1st 5k, 2nd 5k" →
 {{"prizes":{{"currency":"INR","total_pool":"₹10,000","distribution":[{{"rank":1,"title":"1st Place","amount":"₹5,000","per_team":true}},{{"rank":2,"title":"2nd Place","amount":"₹5,000","per_team":true}}],"special_awards":[]}}}}
@@ -659,9 +662,12 @@ def _enrich_config(config: dict) -> dict:
         {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
         {"field_id": "email", "label": "Email Address", "type": "email", "required": True, "unique_per_event": True},
         {"field_id": "phone", "label": "WhatsApp Number", "type": "tel", "required": True},
+        {"field_id": "gender", "label": "Gender", "type": "select", "required": True,
+         "options": ["Male", "Female", "Other", "Prefer not to say"]},
         {"field_id": "college", "label": "College/University", "type": "text", "required": True},
         {"field_id": "year_of_study", "label": "Year of Study", "type": "select", "required": True,
          "options": ["1st Year", "2nd Year", "3rd Year", "4th Year", "5th Year", "PG", "PhD"]},
+        {"field_id": "skills", "label": "Skills (comma-separated)", "type": "text", "required": True},
         {"field_id": "branch", "label": "Branch/Specialization", "type": "text", "required": False},
         {"field_id": "linkedin_url", "label": "LinkedIn Profile", "type": "url", "required": False},
     ])
@@ -1085,14 +1091,31 @@ async def _materialize_rounds_judges_rubric(
     # this single-commit batch would otherwise share an identical created_at —
     # and any `ORDER BY created_at` (the judge dashboard, the pipeline's per-round
     # step order) would then return them jumbled and inconsistently per query.
+    from app.services.time_enforcement import parse_dt
+
+    def _round_dates(r: dict):
+        """Pull start/end out of a round's `dates` block, tolerant of key names."""
+        d = r.get("dates") or {}
+        start = parse_dt(
+            d.get("start") or d.get("starts_at") or d.get("opens_at") or d.get("start_date")
+        )
+        end = parse_dt(
+            d.get("end") or d.get("ends_at") or d.get("deadline")
+            or d.get("closes_at") or d.get("submission_deadline") or d.get("end_date")
+        )
+        return start, end
+
     base_now = datetime.now(timezone.utc)
     if rounds_cfg:
         for idx, r in enumerate(rounds_cfg):
             rname = r.get("round_name") or r.get("name") or f"Round {idx + 1}"
+            start_date, end_date = _round_dates(r)
             rnd = RoundModel(
                 event_id=event.id,
                 name=str(rname)[:120],
                 status=RoundStatus.upcoming,
+                start_date=start_date,
+                end_date=end_date,
                 created_at=base_now + timedelta(seconds=idx),
             )
             db.add(rnd)
@@ -1132,17 +1155,28 @@ async def _materialize_rounds_judges_rubric(
             db.add_all(rows)
     await db.commit()
 
-    # ── Judges (only those with a usable email) ──
+    # ── Judges (those with a usable email) ──
+    # The #5 fix is in extraction: the AI now captures each judge's `email`
+    # regardless of field order, so judges no longer silently vanish here.
+    # Judge.email is NOT NULL + unique per event, so email-less judges can't be
+    # rows yet (listing them needs a nullable-email migration — see correction.md).
     judges_cfg = ((config.get("judging_panel") or {}).get("judges")) or []
+    seen_emails: set[str] = set()
     for j in judges_cfg:
-        email = str(j.get("email") or "").strip()
-        if not email or "@" not in email:
+        if not isinstance(j, dict):
             continue
+        email = str(j.get("email") or "").strip()
+        if "@" not in email:
+            continue
+        key = email.lower()
+        if key in seen_emails:
+            continue
+        seen_emails.add(key)
         existing = (
             await db.execute(
                 select(JudgeModel).where(
                     JudgeModel.event_id == event.id,
-                    JudgeModel.email == email,
+                    func.lower(JudgeModel.email) == key,
                 )
             )
         ).scalars().first()
@@ -1211,6 +1245,37 @@ async def deploy_event(
     except (TypeError, ValueError):
         max_participants = 0
 
+    # Registration window from the AI config timeline (IST → UTC).
+    from app.services.time_enforcement import parse_dt
+
+    reg_cfg = ((config.get("timeline") or {}).get("registration")) or {}
+    reg_opens = parse_dt(reg_cfg.get("opens_at"))
+    reg_closes = parse_dt(reg_cfg.get("closes_at"))
+
+    # ── Public registration page (Task 6) ───────────────────────────────────
+    # Promote the form spec from the AI JSON into SQL so the public, unauthenticated
+    # endpoints can serve it without touching disk. For AI-deployed events we
+    # populate the form directly (preserving the one-shot deploy UX); the manual
+    # editor's later edits go through the registration_form approval gate.
+    p_model = (participants.get("model") or "individual").lower()
+    if p_model not in ("individual", "team"):
+        p_model = "individual"
+    individual_reg_allowed = bool(
+        participants.get("individual_registration_allowed", p_model == "individual")
+    )
+    auto_team = bool(participants.get("auto_team_matching_allowed", False))
+    form_fields = participants.get("registration_form_fields") or None
+    eligibility_cfg = participants.get("eligibility") or None
+    # Teams the participants bring themselves (leader registers members) →
+    # preformed; individual events or org-formed (auto-matched) teams →
+    # platform_generated. team_formation_type is stored only (not consumed by
+    # the pipeline), so deriving it here is safe.
+    derived_formation = (
+        TeamFormationType.preformed
+        if (p_model == "team" and not auto_team)
+        else TeamFormationType.platform_generated
+    )
+
     organizer_id = auth.entity.id
 
     existing = (
@@ -1227,6 +1292,16 @@ async def deploy_event(
         existing.min_team_size = min_size
         existing.max_team_size = max_size
         existing.max_participants = max_participants
+        existing.registration_opens_at = reg_opens
+        existing.registration_closes_at = reg_closes
+        existing.participants_model = p_model
+        existing.individual_registration_allowed = individual_reg_allowed
+        existing.eligibility = eligibility_cfg
+        existing.team_formation_type = derived_formation
+        # Only seed the form on first population — don't clobber an organizer's
+        # approved manual edits on re-deploy.
+        if not existing.registration_form_fields and form_fields:
+            existing.registration_form_fields = form_fields
         event = existing
     else:
         event = EventModel(
@@ -1236,20 +1311,44 @@ async def deploy_event(
             hash=short_hash,
             description=description,
             type=etype,
-            status=EventStatus.active,
+            # Gated deploy: a new event lands as DRAFT and is only published
+            # (→ active) when the organizer approves the event_deploy request.
+            # Draft events are excluded from the public listing (status filter).
+            status=EventStatus.draft,
             stage=EventStage.registration,
-            team_formation_type=TeamFormationType.platform_generated,
+            team_formation_type=derived_formation,
             min_team_size=min_size,
             max_team_size=max_size,
             max_participants=max_participants,
+            registration_opens_at=reg_opens,
+            registration_closes_at=reg_closes,
+            participants_model=p_model,
+            individual_registration_allowed=individual_reg_allowed,
+            eligibility=eligibility_cfg,
+            registration_form_fields=form_fields,
         )
         db.add(event)
 
     await db.commit()
     await db.refresh(event)
 
-    if is_new:
-        await _materialize_rounds_judges_rubric(db, event, config)
+    # Gated deploy (option C): instead of materializing + going live here, create
+    # a pending `event_deploy` approval. The event stays draft (new) until the
+    # organizer approves it in the Approvals panel — at which point the executor
+    # flips it to active and materializes rounds/judges/rubric (+ the form goes
+    # live with it, since the form fields are already on the row). Re-deploys of
+    # an already-live event update its fields immediately (it's already public)
+    # and still record an approval for audit; the executor is idempotent.
+    from app.models.approval import RequestType as _RequestType
+    from app.services.approval_service import create_approval_request
+
+    deploy_approval = await create_approval_request(
+        db,
+        event_id=str(event.id),
+        request_type=_RequestType.event_deploy,
+        payload={"event_id": event_id, "config": config},
+        requested_by=str(organizer_id),
+    )
 
     # Keep the deployed-events index in sync (used by /ai/events).
     async with _index_lock:
@@ -1271,7 +1370,14 @@ async def deploy_event(
         })
         _save_index(index)
 
-    return {"success": True, "event_id": event_id, "hash": short_hash, "file_path": filepath}
+    return {
+        "success": True,
+        "event_id": event_id,
+        "hash": short_hash,
+        "file_path": filepath,
+        "status": "pending_approval",
+        "approval_id": str(deploy_approval.id),
+    }
 
 
 @router.get("/events", dependencies=[_organizer_only])
