@@ -40,6 +40,7 @@ const TYPE_LABEL: Record<ApprovalRequestType, string> = {
   progression: "Round Progression",
   registration_form: "Registration Form",
   event_deploy: "Event Deployment",
+  anomaly_review: "Scoring Anomaly",
 };
 
 const STATUS_STYLE: Record<

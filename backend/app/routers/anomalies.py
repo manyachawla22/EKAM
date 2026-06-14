@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.core.auth_context import AuthContext
 from app.middleware.auth import require_actor_type, require_event_access
 
-from app.models.anomaly import Anomaly
+from app.models.anomaly import Anomaly, AnomalyReviewStatus
 from app.models.event import Round
 from app.models.judge import Judge
 from app.models.submission import Evaluation, Submission
@@ -40,6 +40,35 @@ router = APIRouter(
 class ResolveMyAnomalyBody(BaseModel):
     rubric_scores: Dict[str, float]
     feedback: Optional[str] = None
+
+
+async def _publish_anomaly_resolved(db: AsyncSession, anomaly: Anomaly) -> None:
+    """Push a live 'anomaly' signal to the organizer + the flagged judge so the
+    sidebar glow / anomalies views refresh the instant one is resolved (#4),
+    instead of waiting for the 30s poll or a hard refresh. Best-effort."""
+    try:
+        from app.models.event import Event
+        from app.models.submission import Evaluation as Eval
+        from app.services.event_bus import safe_publish
+
+        targets: List[str] = []
+        event = (
+            await db.execute(select(Event).where(Event.id == anomaly.event_id))
+        ).scalars().first()
+        if event and event.organizer_id:
+            targets.append(str(event.organizer_id))
+        ev = (
+            await db.execute(select(Eval).where(Eval.id == anomaly.evaluation_id))
+        ).scalars().first()
+        if ev is not None:
+            targets.append(str(ev.judge_id))
+        if targets:
+            await safe_publish(
+                targets,
+                {"type": "anomaly", "event_id": str(anomaly.event_id), "anomaly_id": str(anomaly.id)},
+            )
+    except Exception as exc:
+        print(f"[anomalies] resolved signal failed: {exc}")
 
 
 async def _my_judge_ids(db: AsyncSession, auth: AuthContext) -> List:
@@ -73,6 +102,9 @@ async def list_my_anomalies(
         .join(Round, Submission.round_id == Round.id)
         .join(Team, Submission.team_id == Team.id, isouter=True)
         .where(Evaluation.judge_id.in_(judge_ids))
+        # Only anomalies the organizer has approved are visible to the judge (#2):
+        # a flagged score isn't surfaced until the organizer deems it worth review.
+        .where(Anomaly.review_status == AnomalyReviewStatus.approved.value)
         .order_by(Anomaly.created_at.desc())
     )
     if event_id:
@@ -171,6 +203,9 @@ async def resolve_my_anomaly(
     anomaly.resolved_at = datetime.now(timezone.utc)
     await db.commit()
 
+    # Clear the organizer's glow live the moment the judge fixes it (#4).
+    await _publish_anomaly_resolved(db, anomaly)
+
     # Tell the organizer a judge corrected a flagged score (in-app + SSE).
     try:
         from app.models.event import Event
@@ -206,9 +241,18 @@ async def list_anomalies(
     event_id: str,
     db: AsyncSession = Depends(get_db)
 ):
-    """List all anomalies detected for an event."""
+    """List the event's anomalies that the organizer has approved for review.
+
+    Pending-review anomalies are surfaced as approval requests (Approvals tab),
+    not here — so the Anomalies page/badge only reflects considered anomalies and
+    the glow stays accurate (#2/#4). Rejected (dismissed) ones are hidden."""
     result = await db.execute(
-        select(Anomaly).where(Anomaly.event_id == event_id).order_by(Anomaly.created_at.desc())
+        select(Anomaly)
+        .where(
+            Anomaly.event_id == event_id,
+            Anomaly.review_status == AnomalyReviewStatus.approved.value,
+        )
+        .order_by(Anomaly.created_at.desc())
     )
     return result.scalars().all()
 
@@ -240,6 +284,8 @@ async def resolve_anomaly(
     anomaly.is_resolved = True
     anomaly.resolved_by = auth.actor_id
     anomaly.resolved_at = datetime.now(timezone.utc)
-    
+
     await db.commit()
+    # Clear the glow live for the organizer + judge (#4).
+    await _publish_anomaly_resolved(db, anomaly)
     return {"message": "Anomaly resolved"}

@@ -853,6 +853,26 @@ export async function uploadJudgesCsv(
   return uploadCsv(`/judges/${eventId}/upload-csv`, file);
 }
 
+// Fetch the event-specific participant CSV template (#3) and trigger a download.
+// Headers come from getAuthHeaders (organizer-only endpoint); the file is built
+// from the event's registration fields so it matches what the importer expects.
+export async function downloadParticipantsSampleCsv(eventId: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/participants/${eventId}/sample-csv`, {
+    headers: headers as Record<string, string>,
+  });
+  if (!res.ok) throw new Error(`Could not download sample CSV (${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "participants_sample.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
 export function generateHash(): string {

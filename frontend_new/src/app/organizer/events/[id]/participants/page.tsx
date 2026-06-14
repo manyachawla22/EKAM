@@ -5,10 +5,11 @@ export const dynamic = "force-dynamic";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Users, Search, Trash2 } from "lucide-react";
+import { Users, Search, Trash2, Download } from "lucide-react";
 import { toast } from "sonner";
 import {
   listParticipants, deleteParticipant, uploadParticipantsCsv,
+  downloadParticipantsSampleCsv,
   listTeams, listRounds, listSubmissions, getEvaluations,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -134,12 +135,40 @@ export default function ParticipantsPage() {
             {participants.length} registered
           </p>
         </div>
-        <CsvUploadButton
-          label="Bulk Import CSV"
-          disabled={!id}
-          onUpload={(file) => uploadParticipantsCsv(id, file)}
-          onUploaded={fetchParticipants}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <button
+            onClick={async () => {
+              try {
+                await downloadParticipantsSampleCsv(id);
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "Download failed");
+              }
+            }}
+            disabled={!id}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.5rem 0.85rem",
+              borderRadius: "0.5rem",
+              border: "1px solid #222",
+              background: "transparent",
+              color: "rgba(255,255,255,0.7)",
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              cursor: id ? "pointer" : "not-allowed",
+            }}
+            title="Download a CSV template matching this event's registration fields"
+          >
+            <Download size={14} /> Sample CSV
+          </button>
+          <CsvUploadButton
+            label="Bulk Import CSV"
+            disabled={!id}
+            onUpload={(file) => uploadParticipantsCsv(id, file)}
+            onUploaded={fetchParticipants}
+          />
+        </div>
       </div>
 
       <div
