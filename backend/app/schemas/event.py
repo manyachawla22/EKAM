@@ -32,6 +32,11 @@ class RoundResponse(RoundBase):
     start_date: Optional[datetime]
     end_date: Optional[datetime]
     cutoff_score: Optional[float] = None
+    # Per-round feature flags (Event OS) so the UI can label rounds.
+    is_quiz: bool = False
+    live_judging: bool = False
+    anonymous: bool = False
+    scoring_mode: str = "human"
     created_at: datetime
 
     class Config:

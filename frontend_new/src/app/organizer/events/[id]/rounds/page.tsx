@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Layers, Calendar, SlidersHorizontal, CalendarClock } from "lucide-react";
+import { Plus, Layers, Calendar, SlidersHorizontal, CalendarClock, FileQuestion } from "lucide-react";
 import { toast } from "sonner";
 import { listRounds, createRound, updateRoundWindow } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -15,6 +15,19 @@ import Input, { Select } from "@/components/ui/Input";
 import { RoundStatusBadge } from "@/components/ui/Badge";
 import Modal from "@/components/ui/Modal";
 import RubricEditorModal from "@/components/rubric/RubricEditorModal";
+import QuizBankModal from "@/components/quiz/QuizBankModal";
+
+/** Small per-round feature pill (Quiz / Live / Blind) derived from the round flags. */
+function RoundFlagBadge({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{
+      padding: "0.1rem 0.5rem", borderRadius: "9999px", fontSize: "0.65rem", fontWeight: 700,
+      background: `${color}1f`, color, border: `1px solid ${color}55`, letterSpacing: "0.02em",
+    }}>
+      {label}
+    </span>
+  );
+}
 
 export default function RoundsPage() {
   const { id } = useParams<{ id: string }>();
@@ -25,6 +38,7 @@ export default function RoundsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [rubricRound, setRubricRound] = useState<Round | null>(null);
+  const [quizRound, setQuizRound] = useState<Round | null>(null);
 
   const [form, setForm] = useState({
     name: "",
@@ -251,6 +265,9 @@ export default function RoundsPage() {
                     {round.name}
                   </h3>
                   <RoundStatusBadge status={round.status} />
+                  {round.is_quiz && <RoundFlagBadge label="Quiz" color="#6366f1" />}
+                  {round.live_judging && <RoundFlagBadge label="Live" color="#4ade80" />}
+                  {round.anonymous && <RoundFlagBadge label="Blind" color="#fbbf24" />}
                 </div>
                 {(round.start_date || round.end_date) && (
                   <div
@@ -284,6 +301,9 @@ export default function RoundsPage() {
               <Button variant="secondary" onClick={() => setRubricRound(round)}>
                 <SlidersHorizontal size={14} /> Rubric
               </Button>
+              <Button variant="secondary" onClick={() => setQuizRound(round)}>
+                <FileQuestion size={14} /> Quiz
+              </Button>
             </motion.div>
           ))}
         </div>
@@ -294,6 +314,13 @@ export default function RoundsPage() {
         roundId={rubricRound?.id ?? null}
         roundName={rubricRound?.name}
         onClose={() => setRubricRound(null)}
+      />
+
+      <QuizBankModal
+        open={!!quizRound}
+        roundId={quizRound?.id ?? null}
+        roundName={quizRound?.name}
+        onClose={() => setQuizRound(null)}
       />
 
       <Modal

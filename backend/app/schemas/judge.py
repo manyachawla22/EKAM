@@ -36,6 +36,9 @@ class JudgeResponse(JudgeBase):
 
     event_id: UUID
 
+    # Task 3: blueprint role label (Reviewer / Investor / Jury / …). "Judge" by default.
+    role_label: Optional[str] = "Judge"
+
     rating: float
 
     is_verified: bool
@@ -84,6 +87,10 @@ class JudgeAssignmentDetail(BaseModel):
     submission_id: Optional[UUID] = None
     submission_status: Optional[str] = None
     already_evaluated: bool = False
+    # True when this round is scored via the tournament bracket (it has Match
+    # rows), not via a participant submission. The judge dashboard then scores it
+    # through the referee bracket card instead of looking for a submission.
+    is_bracket: bool = False
 
     class Config:
         from_attributes = True

@@ -5,8 +5,9 @@ export const dynamic = "force-dynamic";
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Plus, Zap, Trophy, Users, Crown, UserPlus, Trash2 } from "lucide-react";
+import { Plus, Zap, Trophy, Users, Crown, UserPlus, Trash2, Download } from "lucide-react";
 import TeamDetailModal from "@/components/ui/TeamDetailModal";
+import CsvUploadButton from "@/components/ui/CsvUploadButton";
 import { toast } from "sonner";
 import {
   listTeams,
@@ -15,6 +16,8 @@ import {
   assignTeamMember,
   deleteTeam,
   listParticipants,
+  uploadTeamsCsv,
+  downloadTeamsSampleCsv,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Team, Participant, TeamFormationConstraint } from "@/types";
@@ -229,9 +232,33 @@ export default function TeamsPage() {
             {unassigned.length > 0 && ` · ${unassigned.length} unassigned`}
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setCreateModalOpen(true)}>
-          <Plus size={16} /> Create Team
-        </Button>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <button
+            onClick={async () => {
+              try { await downloadTeamsSampleCsv(id); }
+              catch (err) { toast.error(err instanceof Error ? err.message : "Download failed"); }
+            }}
+            disabled={!id}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "0.4rem",
+              padding: "0.5rem 0.85rem", borderRadius: "0.5rem", border: "1px solid #222",
+              background: "transparent", color: "rgba(255,255,255,0.7)", fontSize: "0.8rem",
+              fontWeight: 600, cursor: id ? "pointer" : "not-allowed",
+            }}
+            title="Download a team-roster CSV template for this event"
+          >
+            <Download size={14} /> Sample CSV
+          </button>
+          <CsvUploadButton
+            label="Import Teams CSV"
+            disabled={!id}
+            onUpload={(file) => uploadTeamsCsv(id, file)}
+            onUploaded={fetchAll}
+          />
+          <Button variant="secondary" onClick={() => setCreateModalOpen(true)}>
+            <Plus size={16} /> Create Team
+          </Button>
+        </div>
       </div>
 
       <div

@@ -5,7 +5,8 @@ EKAM Teams Router
 from uuid import UUID
 from typing import List, Any, Dict
 
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -14,8 +15,12 @@ from app.core.database import get_db
 from app.core.auth_context import AuthContext
 from app.middleware.auth import require_actor_type, require_event_access
 
+from app.models.event import Event as EventModel
 from app.models.team import Team as TeamModel, TeamMember, TeamPreference as TeamPreferenceModel
 from app.models.participant import Participant as ParticipantModel
+from app.services.csv_service import (
+    parse_team_csv, bulk_insert_teams, generate_team_sample_csv,
+)
 
 from app.schemas.team import (
     Team,
@@ -50,6 +55,48 @@ class AutoFormRequest(BaseModel):
 
     team_size: int = 3
     constraints: List[Dict[str, Any]] = []
+
+
+@router.get(
+    "/{event_id}/sample-csv",
+    dependencies=[Depends(require_actor_type(["organizer"])), Depends(require_event_access("event_id"))],
+)
+async def download_team_sample_csv(event_id: str, db: AsyncSession = Depends(get_db)):
+    """Team-roster CSV template (one row per member, grouped by team_name),
+    tailored to this event's registration fields."""
+    event = (await db.execute(select(EventModel).where(EventModel.id == event_id))).scalars().first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return Response(
+        content=generate_team_sample_csv(event),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="teams_sample.csv"'},
+    )
+
+
+@router.post(
+    "/{event_id}/upload-csv",
+    dependencies=[Depends(require_actor_type(["organizer"])), Depends(require_event_access("event_id"))],
+)
+async def upload_team_csv(
+    event_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)
+):
+    """Bulk-create teams (+ their members) from a roster CSV. One row per member,
+    grouped by `team_name`; first member of each team is the leader."""
+    if not (file.filename or "").endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File must be a CSV")
+    teams_data = parse_team_csv(await file.read())
+    result = await bulk_insert_teams(db, event_id, teams_data)
+    t, m, skipped = result["teams"], result["members"], result["skipped"]
+    if t > 0:
+        message = f"Imported {t} team{'s' if t != 1 else ''} ({m} member{'s' if m != 1 else ''})"
+        if skipped:
+            message += f"; {skipped} skipped (already exist or duplicate)"
+    elif skipped:
+        message = f"No new teams added — {skipped} already exist for this event."
+    else:
+        message = "No valid rows. Ensure your CSV has 'team_name', 'name', and 'email' columns."
+    return {"message": message, "teams": t, "members": m, "skipped": skipped}
 
 
 @router.post(

@@ -353,6 +353,11 @@ export default function JudgesPage() {
               >
                 <p style={{ fontWeight: 500, color: "#fff", margin: 0, textDecoration: "underline", textDecorationColor: "rgba(255,255,255,0.15)", textUnderlineOffset: "2px" }}>
                   {j.name || j.email}
+                  {j.role_label && j.role_label !== "Judge" && (
+                    <span style={{ marginLeft: "0.4rem", fontSize: "0.62rem", fontWeight: 700, color: "#e8503a", background: "rgba(232,80,58,0.12)", border: "1px solid rgba(232,80,58,0.25)", borderRadius: "9999px", padding: "0.05rem 0.4rem", verticalAlign: "middle" }}>
+                      {j.role_label}
+                    </span>
+                  )}
                 </p>
                 {j.email && (
                   <p style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)", margin: 0 }}>{j.email}</p>

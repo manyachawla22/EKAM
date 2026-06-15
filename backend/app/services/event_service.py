@@ -139,6 +139,8 @@ async def delete_event_service(
     event_id,
     current_user: User,
 ):
+    from sqlalchemy import text
+
     result = await db.execute(
         select(Event).where(Event.id == event_id)
     )
@@ -149,6 +151,33 @@ async def delete_event_service(
         if str(event.organizer_id) != str(current_user.id):
             raise HTTPException(status_code=403, detail="Cannot delete another organizer's event")
 
-    await db.delete(event)
+    # The event has many child rows across tables whose FKs are NOT ON DELETE
+    # CASCADE, so a bare ORM delete fails (FK violation / NOT-NULL on SET NULL).
+    # Delete the whole graph explicitly, leaves-first.
+    eid = {"e": str(event_id)}
+    cascade = [
+        "DELETE FROM matches WHERE event_id = :e",
+        "DELETE FROM anomalies WHERE event_id = :e",
+        "DELETE FROM evaluations WHERE submission_id IN "
+        "(SELECT s.id FROM submissions s JOIN rounds r ON s.round_id = r.id WHERE r.event_id = :e)",
+        "DELETE FROM judge_assignments WHERE round_id IN (SELECT id FROM rounds WHERE event_id = :e)",
+        "DELETE FROM submissions WHERE round_id IN (SELECT id FROM rounds WHERE event_id = :e)",
+        "DELETE FROM rubric_criteria WHERE round_id IN (SELECT id FROM rounds WHERE event_id = :e)",
+        "DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE event_id = :e)",
+        "DELETE FROM team_preferences WHERE team_id IN (SELECT id FROM teams WHERE event_id = :e)",
+        "DELETE FROM email_drafts WHERE event_id = :e",
+        "DELETE FROM approval_requests WHERE event_id = :e",
+        "DELETE FROM notifications WHERE event_id = :e",
+        "DELETE FROM reports WHERE event_id = :e",
+        "DELETE FROM event_pipeline WHERE event_id = :e",
+        "DELETE FROM teams WHERE event_id = :e",
+        "DELETE FROM participants WHERE event_id = :e",
+        "DELETE FROM judges WHERE event_id = :e",
+        "DELETE FROM rounds WHERE event_id = :e",
+        "DELETE FROM themes WHERE event_id = :e",
+        "DELETE FROM events WHERE id = :e",
+    ]
+    for stmt in cascade:
+        await db.execute(text(stmt), eid)
     await db.commit()
     return {"message": "Event deleted"}

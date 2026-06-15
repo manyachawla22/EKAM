@@ -7,6 +7,7 @@ Integrates with the Approval Workflow.
 
 from typing import List, Dict, Any
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -15,7 +16,7 @@ from app.models.judge import Judge, JudgeAssignment
 from app.models.team import Team, TeamMember
 from app.models.event import Round, Event
 from app.models.theme import Theme
-from app.models.approval import RequestType
+from app.models.approval import ApprovalRequest, ApprovalStatus, RequestType
 
 from app.services.cpsat_team_service import generate_teams
 from app.services.cpsat_judge_service import generate_assignments
@@ -156,6 +157,25 @@ async def propose_team_formation(
         "team_size": team_size,
     }
 
+    # Supersede any still-PENDING team-formation proposal so multiple competing
+    # pending cards can't accumulate for the same decision (mirrors judge
+    # assignment). Note: we deliberately do NOT delete already-created teams on a
+    # later approval — Team cascades to submissions/evaluations, so a destructive
+    # replace could wipe scored data. The supersede + per-approval status guard
+    # close the practical double-approval path.
+    stale = (await db.execute(
+        select(ApprovalRequest).where(
+            ApprovalRequest.event_id == event_id,
+            ApprovalRequest.request_type == RequestType.team_formation,
+            ApprovalRequest.status == ApprovalStatus.pending,
+        )
+    )).scalars().all()
+    for s in stale:
+        s.status = ApprovalStatus.rejected
+        s.review_notes = "Superseded by a newer team-formation proposal."
+    if stale:
+        await db.commit()
+
     approval = await create_approval_request(
         db=db,
         event_id=event_id,
@@ -265,10 +285,11 @@ async def propose_judge_assignment(
     2. Run pure CP-SAT optimizer.
     3. Create an ApprovalRequest.
 
-    Every team is reviewed by a panel of at least 3 judges (policy minimum), so
-    `judges_per_team` is floored at 3 regardless of what the caller passes.
+    The panel size ADAPTS to the event: up to `judges_per_team`, but never more
+    than the judges that actually exist, and at least 1. So a hackathon with a full
+    panel still gets 3, while a 1-referee esports tournament or a 2-reviewer
+    symposium assigns correctly instead of failing on a fixed minimum.
     """
-    judges_per_team = max(3, judges_per_team)
     # Auto-detect the first round for the event when the caller doesn't specify
     # one. Order by created_at so this is deterministic (the panel is shared
     # across all rounds at grading time, but the stored round_id should still be
@@ -301,14 +322,23 @@ async def propose_judge_assignment(
     if not judges_db or not teams_db:
         raise ValueError("Not enough judges or teams to run assignment")
 
-    # Gate: all teams must have selected a theme before judges can be assigned.
-    teams_without_theme = [t.name for t in teams_db if not t.theme_id]
-    if teams_without_theme:
-        names = ", ".join(teams_without_theme)
-        raise ValueError(
-            f"The following team(s) have not selected a theme yet: {names}. "
-            f"All teams must select a theme before judge assignment can proceed."
-        )
+    # Adapt the panel size to the actual roster (see docstring): up to the
+    # requested count, capped by available judges, floored at 1.
+    judges_per_team = max(1, min(judges_per_team, len(judges_db)))
+
+    # Theme gate — ONLY for events that use themes/tracks (hackathons). When no
+    # team has a theme the event simply doesn't use them (esports, debate,
+    # symposium, pitch…), so judge assignment must not be blocked on it. When at
+    # least one team has a theme, every team is required to have one.
+    event_uses_themes = any(t.theme_id for t in teams_db)
+    if event_uses_themes:
+        teams_without_theme = [t.name for t in teams_db if not t.theme_id]
+        if teams_without_theme:
+            names = ", ".join(teams_without_theme)
+            raise ValueError(
+                f"The following team(s) have not selected a theme yet: {names}. "
+                f"All teams must select a theme before judge assignment can proceed."
+            )
 
     # Judge model uses `institution`, not `organization`.
     # Use None (not a "Unknown" sentinel) when missing — the optimizer only
@@ -371,6 +401,23 @@ async def propose_judge_assignment(
         "assignments": assignments,
     }
 
+    # Supersede any still-PENDING judge-assignment proposal for this event so we
+    # don't accumulate multiple competing pending cards for the same decision (the
+    # source of the "I rejected it but it was already accepted" confusion). The new
+    # proposal is the single source of truth.
+    stale = (await db.execute(
+        select(ApprovalRequest).where(
+            ApprovalRequest.event_id == event_id,
+            ApprovalRequest.request_type == RequestType.judge_assignment,
+            ApprovalRequest.status == ApprovalStatus.pending,
+        )
+    )).scalars().all()
+    for s in stale:
+        s.status = ApprovalStatus.rejected
+        s.review_notes = "Superseded by a newer judge-assignment proposal."
+    if stale:
+        await db.commit()
+
     approval = await create_approval_request(
         db=db,
         event_id=event_id,
@@ -399,6 +446,13 @@ async def execute_judge_assignment(
         raise ValueError("execute_judge_assignment: round_id missing from approval payload")
 
     try:
+        # IDEMPOTENT: clear any existing assignments for this round first, so a
+        # re-approval (or an accidental double-execution) REPLACES the panel
+        # instead of accumulating duplicate (judge, team, round) rows. Without this,
+        # proposing/approving judge assignment more than once corrupted the round's
+        # panel (e.g. 3 + 3 + 1 rows for a 3-judge round).
+        await db.execute(delete(JudgeAssignment).where(JudgeAssignment.round_id == round_id))
+
         for data in assignments_data:
             assignment = JudgeAssignment(
                 judge_id=data["judge_id"],

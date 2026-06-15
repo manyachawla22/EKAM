@@ -44,9 +44,11 @@ export default function PublicEventRegisterPage() {
     getPublicEvent(hash)
       .then((d) => {
         setDetail(d);
-        // Preformed-team events start with min_team_size member slots.
+        // Preformed-team events pre-populate the MAX number of member slots; the
+        // first min are compulsory, the rest optional (blank extras are dropped on
+        // submit). So the leader sees exactly how many members they may add.
         if (d.team_registration) {
-          const n = Math.max(d.min_team_size || 1, 1);
+          const n = Math.max(d.max_team_size || d.min_team_size || 2, 2);
           setPersons(Array.from({ length: n }, emptyPerson));
         }
       })
@@ -128,10 +130,31 @@ export default function PublicEventRegisterPage() {
     setPersons((p) => p.filter((_, i) => i !== idx));
   };
 
+  // A member slot is "empty" (an unused optional slot) when nothing was entered.
+  const isEmptyPerson = (p: Person): boolean =>
+    !p.resumeUrl &&
+    !Object.values(p.answers || {}).some(
+      (v) => v !== undefined && v !== null && !(typeof v === "string" && !v.trim())
+    );
+
+  // The team members that will actually be submitted: every filled slot, plus the
+  // first `min` slots (which are compulsory even if blank, so they get validated).
+  const submittablePersons = (): Person[] => {
+    if (!isTeam) return persons;
+    const min = Math.max(detail?.min_team_size || 2, 2);
+    return persons.filter((p, i) => i < min || !isEmptyPerson(p));
+  };
+
   const validate = (): string | null => {
     if (isTeam && !teamName.trim()) return "Please enter a team name.";
-    for (let i = 0; i < persons.length; i++) {
-      const p = persons[i];
+    const list = submittablePersons();
+    if (isTeam) {
+      const min = Math.max(detail?.min_team_size || 2, 2);
+      const filled = list.filter((p) => !isEmptyPerson(p)).length;
+      if (filled < min) return `Please complete at least ${min} members' details.`;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
       const who = isTeam ? (i === 0 ? "Team leader" : `Member ${i + 1}`) : "You";
       if (!p.resumeUrl) return `${who}: please upload a resume.`;
       for (const f of fields) {
@@ -159,7 +182,7 @@ export default function PublicEventRegisterPage() {
         await registerPublic(hash, {
           captcha_token: captchaToken || undefined,
           team_name: teamName.trim(),
-          members: persons.map((p, i) => ({
+          members: submittablePersons().map((p, i) => ({
             answers: p.answers,
             resume_url: p.resumeUrl,
             is_leader: i === 0,
@@ -283,8 +306,9 @@ export default function PublicEventRegisterPage() {
                   placeholder="e.g. The Innovators"
                 />
                 <p className="mt-2 text-xs text-white/40">
-                  As team leader, fill in each member&apos;s details and resume ({detail.min_team_size}–
-                  {detail.max_team_size} members).
+                  As team leader, fill in each member&apos;s details and resume. The first{" "}
+                  {Math.max(detail.min_team_size || 2, 2)} members are required; up to{" "}
+                  {detail.max_team_size} total — leave any extra slots blank.
                 </p>
               </div>
             )}
@@ -293,7 +317,11 @@ export default function PublicEventRegisterPage() {
               <div key={idx} className="rounded-2xl border border-white/10 bg-white/[0.02] p-6">
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="font-semibold text-white">
-                    {isTeam ? (idx === 0 ? "Team Leader" : `Member ${idx + 1}`) : "Your details"}
+                    {isTeam
+                      ? idx === 0
+                        ? "Team Leader"
+                        : `Member ${idx + 1}${idx >= Math.max(detail.min_team_size || 2, 2) ? " (optional)" : ""}`
+                      : "Your details"}
                   </h3>
                   {isTeam && persons.length > (detail.min_team_size || 1) && (
                     <button
