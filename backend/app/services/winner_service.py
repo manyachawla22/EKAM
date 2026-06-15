@@ -121,6 +121,28 @@ async def propose_winners(
     if rnd is None:
         return {"round_id": None, "winners": []}
 
+    # Tournament round: the winners come from the bracket result (champion,
+    # runner-up, …), not a submission leaderboard.
+    from app.models.match import Match
+
+    is_bracket = (
+        await db.execute(select(Match.id).where(Match.round_id == rnd.id).limit(1))
+    ).scalars().first()
+    if is_bracket is not None:
+        from app.services.bracket_service import bracket_standings
+
+        standings = await bracket_standings(db, rnd.id)
+        winners = [
+            {
+                "rank": s["rank"],
+                "team_id": s["team_id"],
+                "team_name": s["team_name"],
+                "score": float(s["score"]),
+            }
+            for s in standings[: max(0, top_n)]
+        ]
+        return {"round_id": str(rnd.id), "winners": winners}
+
     leaderboard = await generate_leaderboard_service(db, rnd.id)
 
     winners = []

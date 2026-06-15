@@ -235,6 +235,145 @@ async def bulk_insert_participants(
     return {"inserted": inserted, "skipped": skipped}
 
 
+_TEAM_KEYS = ("team_name", "team name", "team", "squad")
+
+
+def parse_team_csv(file_content: bytes) -> List[Dict[str, Any]]:
+    """Parse a TEAM roster CSV (long format — one row per member). Rows are grouped
+    into teams by the `team_name` column; the first member of each team is the
+    leader. Member columns reuse the participant keyword matching (name/email/…).
+    Only team_name + member name + email are required per row."""
+    try:
+        content = file_content.decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(content))
+        teams: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for row in reader:
+            row = {k.strip().lower(): (v or "").strip() for k, v in row.items() if k}
+            team_name = next((row[k] for k in _TEAM_KEYS if row.get(k)), None)
+            # Exclude the team columns so member name/email matching can't grab them
+            # (e.g. "name" is a substring of "team_name").
+            member_row = {k: v for k, v in row.items() if k not in _TEAM_KEYS}
+            name = _first_matching(member_row, _NAME_KEYS)
+            email = _first_matching(member_row, _EMAIL_KEYS)
+            if not team_name or not name or not email:
+                continue
+            key = team_name.strip().lower()
+            if key not in teams:
+                teams[key] = {"team_name": team_name.strip(), "members": []}
+                order.append(key)
+            skills_str = _first_matching(member_row, _SKILL_KEYS) or ""
+            teams[key]["members"].append({
+                "name": name,
+                "email": email,
+                "organization": _first_matching(member_row, _ORG_KEYS),
+                "gender": _first_matching(member_row, _GENDER_KEYS),
+                "phone": _first_matching(member_row, _PHONE_KEYS),
+                "skills": [s.strip() for s in skills_str.split(",") if s.strip()],
+                "registration_data": dict(row),
+            })
+        return [teams[k] for k in order]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse CSV: {str(e)}")
+
+
+def generate_team_sample_csv(event) -> str:
+    """A team-roster CSV template: team_name + per-member columns matching the
+    event's registration fields. One example team across two rows."""
+    headers: List[str] = ["team_name", "name", "email", "gender", "phone", "organization", "skills"]
+    seen = {h.lower() for h in headers}
+    for f in (getattr(event, "registration_form_fields", None) or []):
+        if not isinstance(f, dict):
+            continue
+        label = (f.get("label") or f.get("field_id") or "").strip()
+        if not label or label.lower() in seen:
+            continue
+        hay = f"{(f.get('field_id') or '').lower()} {label.lower()}"
+        if any(k in hay for k in _NAME_KEYS + _EMAIL_KEYS + _GENDER_KEYS + _PHONE_KEYS + _ORG_KEYS + _SKILL_KEYS):
+            continue
+        headers.append(label)
+        seen.add(label.lower())
+    examples = [
+        {"team_name": "The Innovators", "name": "Asha Verma", "email": "asha@example.com",
+         "gender": "Female", "phone": "9876543210", "organization": "IIT Bombay", "skills": "Python, ML"},
+        {"team_name": "The Innovators", "name": "Rahul Nair", "email": "rahul@example.com",
+         "gender": "Male", "phone": "9123456780", "organization": "NIT Trichy", "skills": "React, Node"},
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=headers)
+    writer.writeheader()
+    for ex in examples:
+        writer.writerow({h: ex.get(h, "") for h in headers})
+    return buf.getvalue()
+
+
+async def bulk_insert_teams(
+    db: AsyncSession, event_id: str, teams_data: List[Dict[str, Any]]
+) -> Dict[str, int]:
+    """Create Team + Participant + TeamMember rows from a parsed team roster.
+    Skips teams whose name already exists and members whose email already exists
+    (so re-uploading is safe). Members are created confirmed (an uploaded roster is
+    a known, accepted team). Returns {teams, members, skipped}."""
+    from app.models.team import Team, TeamMember
+    from app.models.participant import RegistrationStatus
+
+    existing_emails = {
+        e.lower() for (e,) in (await db.execute(
+            select(Participant.email).where(Participant.event_id == event_id)
+        )).all() if e
+    }
+    existing_team_names = {
+        n.lower() for (n,) in (await db.execute(
+            select(Team.name).where(Team.event_id == event_id)
+        )).all() if n
+    }
+
+    teams_created = members_created = skipped = 0
+    for t in teams_data:
+        tname = (t.get("team_name") or "").strip()
+        if not tname or tname.lower() in existing_team_names:
+            skipped += 1
+            continue
+        members = []
+        for m in t.get("members", []):
+            em = (m.get("email") or "").lower()
+            if not em or em in existing_emails:
+                continue
+            existing_emails.add(em)
+            members.append(m)
+        if not members:
+            skipped += 1
+            continue
+        team = Team(event_id=event_id, name=tname)
+        db.add(team)
+        await db.flush()
+        existing_team_names.add(tname.lower())
+        teams_created += 1
+        for i, m in enumerate(members):
+            p = Participant(
+                event_id=event_id, name=m["name"], email=m["email"],
+                institution=m.get("organization"), gender=m.get("gender"),
+                phone=m.get("phone"), skills=m.get("skills") or [],
+                registration_data=m.get("registration_data"),
+                status=RegistrationStatus.confirmed,
+            )
+            db.add(p)
+            await db.flush()
+            db.add(TeamMember(team_id=team.id, participant_id=p.id, is_leader=(i == 0)))
+            members_created += 1
+
+    if teams_created:
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Failed to import teams (a row may conflict with existing data).")
+    return {"teams": teams_created, "members": members_created, "skipped": skipped}
+
+
 async def bulk_insert_judges(
     db: AsyncSession,
     event_id: str,

@@ -210,7 +210,19 @@ _PRE_ROUND_STEPS = [
 ]
 
 
-def build_steps(rounds: list) -> list[dict]:
+def build_steps(rounds: list, blueprint: dict | None = None) -> list[dict]:
+    """Ordered pipeline steps.
+
+    Task 3: when the event carries a `blueprint`, the steps are derived from
+    `blueprint.stages` (any format, including custom/manual phases and individual
+    `entry_formation`). When there's no blueprint (legacy/hackathon events), this
+    falls back to the original hardcoded default — backward-compat, non-negotiable.
+    """
+    if blueprint:
+        bp_steps = _build_steps_from_blueprint(blueprint, rounds)
+        if bp_steps:
+            return bp_steps
+
     steps: list[dict] = [{"id": sid, "label": label} for sid, label in _PRE_ROUND_STEPS]
     for index, rnd in enumerate(rounds, start=1):
         rid = str(rnd.id)
@@ -222,20 +234,106 @@ def build_steps(rounds: list) -> list[dict]:
     return steps
 
 
+def _blueprint_round_groups(stages: list[dict]) -> list[dict]:
+    """Group blueprint stages into EKAM 'rounds'. A round is anchored by an
+    `evaluation` stage, plus the preceding `submission` (since the last round) and
+    the following non-winners `progression`. The generator creates one Round per
+    group, in this order, so build_steps can pair group[i] ↔ rounds[i]."""
+    groups: list[dict] = []
+    pending_sub: dict | None = None
+    for s in stages:
+        t = (s.get("type") or "").lower()
+        if t == "submission":
+            pending_sub = s
+        elif t == "evaluation":
+            groups.append({"submission": pending_sub, "evaluation": s, "bracket": None, "progression": None})
+            pending_sub = None
+        elif t == "bracket":
+            # A bracket is its OWN round (a knockout phase, refereed live) — anchor a
+            # group on it so it gets a real, well-named round and a first-class
+            # pipeline step instead of a manual `custom:` step.
+            groups.append({"submission": pending_sub, "evaluation": None, "bracket": s, "progression": None})
+            pending_sub = None
+        elif t == "progression":
+            rule = s.get("rule") or {}
+            if rule.get("kind") != "winners" and groups and groups[-1].get("progression") is None:
+                groups[-1]["progression"] = s
+    return groups
+
+
+def _build_steps_from_blueprint(blueprint: dict, rounds: list) -> list[dict]:
+    """Map an ordered blueprint into pipeline steps the existing executors run.
+    Round-bearing stages (submission/evaluation/progression) reuse the round step
+    ids; pre/terminal/custom stages map to their own ids. Unknown phases become
+    `custom:<id>` manual steps so an unseen format still flows roster → results."""
+    stages = blueprint.get("stages") or []
+    if not stages:
+        return []
+
+    groups = _blueprint_round_groups(stages)
+    stage_to_step: dict[str, tuple[str, str]] = {}  # stage_id -> (round_id, kind)
+    for i, g in enumerate(groups):
+        if i >= len(rounds):
+            break
+        rid = str(rounds[i].id)
+        if g.get("submission"):
+            stage_to_step[g["submission"].get("id", "")] = (rid, "submission")
+        if g.get("evaluation"):
+            stage_to_step[g["evaluation"].get("id", "")] = (rid, "evaluation")
+        if g.get("bracket"):
+            stage_to_step[g["bracket"].get("id", "")] = (rid, "bracket")
+        if g.get("progression"):
+            stage_to_step[g["progression"].get("id", "")] = (rid, "advancement")
+
+    steps: list[dict] = []
+    for s in stages:
+        sid = s.get("id") or ""
+        t = (s.get("type") or "").lower()
+        label = s.get("label") or t.replace("_", " ").title()
+        if sid in stage_to_step:
+            rid, kind = stage_to_step[sid]
+            steps.append({"id": f"round:{rid}:{kind}", "label": label, "round_id": rid})
+        elif t == "registration":
+            steps.append({"id": "registration", "label": label})
+        elif t == "team_formation":
+            steps.append({"id": "team_formation", "label": label})
+        elif t == "entry_formation":
+            steps.append({"id": "entry_formation", "label": label})
+        elif t == "theme_selection":
+            steps.append({"id": "theme_selection", "label": label})
+        elif t == "judge_assignment":
+            steps.append({"id": "judge_assignment", "label": label})
+        elif t in ("progression", "bracket") and (s.get("rule") or {}).get("kind") == "winners":
+            steps.append({"id": "winner_announcement", "label": label})
+        elif t == "communication":
+            continue  # a touchpoint (communications[]), not a standalone pipeline step
+        else:
+            # custom / manual / approval / anything the engine can't automate →
+            # an informational step the organizer advances by hand.
+            steps.append({"id": f"custom:{sid}", "label": label})
+
+    if not any(st["id"] == "winner_announcement" for st in steps):
+        steps.append({"id": "winner_announcement", "label": "Winner Announcement"})
+    steps.append({"id": "completed", "label": "Completed"})
+    return steps
+
+
 def _coarse_stage(step_id: str) -> str:
     if step_id == "registration":
         return "registration"
-    if step_id in ("team_formation", "theme_selection", "judge_assignment"):
+    if step_id in ("team_formation", "entry_formation", "theme_selection", "judge_assignment"):
         return "team_formation"
     if step_id.endswith(":submission"):
         return "submission"
-    if step_id.endswith(":evaluation") or step_id.endswith(":advancement"):
+    if step_id.endswith(":evaluation") or step_id.endswith(":advancement") or step_id.endswith(":bracket"):
         return "evaluation"
     if step_id == "winner_announcement":
         return "results"
     if step_id == "completed":
         return "completed"
-    return "registration"
+    # custom:* (and anything unmapped) → not a coarse EventStage; the caller's
+    # EventStage(...) raises ValueError and leaves event.stage unchanged.
+    return "custom"
 
 
 def _round_id_of(step_id: str) -> str | None:
@@ -301,7 +399,7 @@ async def _sync_pipeline_cursor_to_stage(db: AsyncSession, event: Event, target_
     regresses a pipeline that's already further along.
     """
     rounds = await _ordered_rounds(db, event.id)
-    steps = build_steps(rounds)
+    steps = build_steps(rounds, getattr(event, "blueprint", None))
     ids = [s["id"] for s in steps]
     pipeline = await get_or_create_pipeline(db, event, rounds)
 
@@ -404,6 +502,25 @@ async def _condition_met(
         )).scalar() or 0
         return n > 0
 
+    if step_id == "entry_formation":
+        # Individual formats (§7b.3): ready as soon as there are confirmed
+        # participants — the transition executor creates the singleton "team of
+        # one" per participant, then the pipeline flows to the first submission.
+        confirmed = (await db.execute(
+            select(func.count(Participant.id)).where(
+                Participant.event_id == event.id,
+                Participant.status == RegistrationStatus.confirmed,
+            )
+        )).scalar() or 0
+        return confirmed > 0
+
+    if step_id.startswith("custom:"):
+        # Known-unknown manual phase (topic allocation, mentorship, country
+        # allocation…). There's no on-platform "done" signal, so it's organizer-
+        # driven: proposable immediately (an approval card appears to advance past
+        # it) AND directly advanceable by hand — both paths, the human is the gate.
+        return True
+
     if step_id == "theme_selection":
         teams = (await db.execute(
             select(Team).where(Team.event_id == event.id)
@@ -448,7 +565,32 @@ async def _condition_met(
         return all(t.id in submitted for t in active)
 
     if step_id.endswith(":evaluation"):
-        return await _round_fully_evaluated(db, _round_id_of(step_id))
+        rid = _round_id_of(step_id)
+        rnd = (await db.execute(select(Round).where(Round.id == rid))).scalars().first()
+        if rnd is not None and getattr(rnd, "scoring_mode", "human") == "auto":
+            # Auto-scored round (CTF/coding/AI): no judges — ready once every active
+            # team's submission carries a score (ingested from the autograder).
+            teams = (await db.execute(
+                select(Team).where(Team.event_id == event.id)
+            )).scalars().all()
+            active = [t for t in teams if str(t.id) not in eliminated]
+            if not active:
+                return False
+            scored = (await db.execute(
+                select(Submission.team_id).where(
+                    Submission.round_id == rid, Submission.final_score.isnot(None)
+                )
+            )).all()
+            scored_teams = {row[0] for row in scored}
+            return all(t.id in scored_teams for t in active)
+        return await _round_fully_evaluated(db, rid)
+
+    if step_id.endswith(":bracket"):
+        # Knockout phase: the organizer generates the bracket and referees score the
+        # matches on the Bracket tab. There's no single on-platform "all done" signal
+        # (a bracket can be partially played), so it's organizer-driven — proposable
+        # immediately and advanced by hand once the final is decided.
+        return True
 
     if step_id.endswith(":advancement") or step_id == "winner_announcement":
         return True  # organizer-driven; proposable immediately
@@ -463,7 +605,7 @@ async def get_state(db: AsyncSession, event_id) -> dict:
                 "next_step": None, "eliminated_team_ids": []}
 
     rounds = await _ordered_rounds(db, event_id)
-    steps = build_steps(rounds)
+    steps = build_steps(rounds, getattr(event, "blueprint", None))
     pipeline = await get_or_create_pipeline(db, event, rounds)
     eliminated = (pipeline.data or {}).get("eliminated_team_ids", [])
 
@@ -558,7 +700,7 @@ async def autopropose(db: AsyncSession, event_id) -> None:
         return
 
     rounds = await _ordered_rounds(db, event_id)
-    steps = build_steps(rounds)
+    steps = build_steps(rounds, getattr(event, "blueprint", None))
     pipeline = await get_or_create_pipeline(db, event, rounds)
     ids = [s["id"] for s in steps]
     current = pipeline.current_step
@@ -684,8 +826,9 @@ async def advance_pipeline(db: AsyncSession, event_id, cutoff_score: float = 0.0
             ),
         }
 
+    event = (await db.execute(select(Event).where(Event.id == event_id))).scalars().first()
     rounds = await _ordered_rounds(db, event_id)
-    steps = build_steps(rounds)
+    steps = build_steps(rounds, getattr(event, "blueprint", None))
     current_obj = next((s for s in steps if s["id"] == current), {})
 
     payload = {
@@ -744,6 +887,64 @@ async def _email_round_results(db, event, round_id, advancing_ids, failing_ids) 
             )
 
 
+async def ensure_singleton_teams(db: AsyncSession, event_id) -> int:
+    """Individual (team-less) formats (§7b.3): give every participant without a
+    team a one-member 'team of one', so the team-keyed submission / evaluation /
+    judge-assignment / leaderboard machinery works unchanged. Idempotent — skips
+    participants who already belong to a team. Returns how many were created.
+    Also used as a backfill from the registration path / generator."""
+    participants = (await db.execute(
+        select(Participant).where(Participant.event_id == event_id)
+    )).scalars().all()
+    if not participants:
+        return 0
+    membered = set((await db.execute(
+        select(TeamMember.participant_id)
+        .join(Team, Team.id == TeamMember.team_id)
+        .where(Team.event_id == event_id)
+    )).scalars().all())
+
+    created = 0
+    for p in participants:
+        if p.id in membered:
+            continue
+        team = Team(event_id=event_id, name=(p.name or f"Entry {str(p.id)[:8]}"))
+        db.add(team)
+        await db.flush()
+        db.add(TeamMember(team_id=team.id, participant_id=p.id, is_leader=True))
+        created += 1
+    if created:
+        await db.commit()
+    return created
+
+
+async def ensure_live_submissions(db: AsyncSession, event_id, round_id, eliminated: list[str]) -> int:
+    """Live-judged round (Round.live_judging=True, §submission_required): there is
+    no participant submission step, so create a placeholder Submission per active
+    team. This lets judges/referees score live through the SAME evaluation path
+    (Evaluation.submission_id) and keeps the leaderboard/advancement machinery
+    unchanged. Idempotent — skips teams that already have a submission. Returns how
+    many were created."""
+    teams = (await db.execute(
+        select(Team).where(Team.event_id == event_id)
+    )).scalars().all()
+    active = [t for t in teams if str(t.id) not in (eliminated or [])]
+    if not active:
+        return 0
+    existing = {row[0] for row in (await db.execute(
+        select(Submission.team_id).where(Submission.round_id == round_id)
+    )).all()}
+    created = 0
+    for t in active:
+        if t.id in existing:
+            continue
+        db.add(Submission(team_id=t.id, round_id=round_id, attachments=[]))
+        created += 1
+    if created:
+        await db.commit()
+    return created
+
+
 async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
     """Advance the dynamic pipeline cursor and perform the step's side effects."""
     event_id = payload.get("event_id")
@@ -759,6 +960,27 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
     rounds = await _ordered_rounds(db, event_id)
     pipeline = await get_or_create_pipeline(db, event, rounds)
     eliminated = list((pipeline.data or {}).get("eliminated_team_ids", []))
+
+    # Entry setup (individual formats, §7b.3): materialize one "team of one" per
+    # participant so the team-keyed downstream machinery works unchanged.
+    if current_step == "entry_formation":
+        try:
+            await ensure_singleton_teams(db, event_id)
+        except Exception as exc:
+            print(f"[pipeline_service] entry_formation singleton teams failed: {exc}")
+
+    # Live-judged round: entering its evaluation step with no participant
+    # submissions → seed a placeholder submission per active team so referees can
+    # score live through the normal evaluation path. Only for rounds flagged
+    # live_judging (the feature flag) — normal rounds are untouched.
+    if next_step and next_step.endswith(":evaluation"):
+        rid = _round_id_of(next_step)
+        rnd = (await db.execute(select(Round).where(Round.id == rid))).scalars().first()
+        if rnd is not None and getattr(rnd, "live_judging", False):
+            try:
+                await ensure_live_submissions(db, event_id, rid, eliminated)
+            except Exception as exc:
+                print(f"[pipeline_service] live-round placeholder submissions failed: {exc}")
 
     # Advancement: split this round's teams by the organizer's cutoff, eliminate
     # the failers, and email both groups.
@@ -848,6 +1070,28 @@ async def execute_pipeline_transition(db: AsyncSession, payload: dict) -> None:
         )
     except Exception as exc:
         print(f"[pipeline_service] pipeline signal failed: {exc}")
+
+    # Task 3: draft any blueprint communications for the stage just ENTERED, via
+    # the existing approval-gated email_batch flow (organizer reviews/sends). No-op
+    # for legacy events (no blueprint). Best-effort — never blocks the pipeline.
+    try:
+        from app.services.communication_service import fire_stage_communications
+
+        await fire_stage_communications(db, event, next_step)
+    except Exception as exc:
+        print(f"[pipeline_service] stage communications failed: {exc}")
+
+    # Leaving registration: propose the participant welcome/confirmation batch (with
+    # magic links) so registrants can reach their dashboard. Critical for preformed-
+    # team and individual events, which have no team_formation step to email people.
+    # Approval-gated; blueprint events only; best-effort.
+    if current_step == "registration":
+        try:
+            from app.services.communication_service import fire_post_registration
+
+            await fire_post_registration(db, event)
+        except Exception as exc:
+            print(f"[pipeline_service] post-registration emails failed: {exc}")
 
     # Keep each round's status column in step with the new cursor position so
     # the judge/organizer UIs show done/active/upcoming correctly.

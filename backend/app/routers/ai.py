@@ -72,7 +72,9 @@ def _is_uuid(value: Any) -> bool:
 
 
 _MODELS = ["llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct"]
-_FALLBACK_MODELS = ["llama-3.1-8b-instant", "llama3-8b-8192"]
+# Current Groq production models only — `llama3-8b-8192` and `gemma2-9b-it` are both
+# decommissioned and broke the fallback chain (see llm_client._GROQ_FALLBACKS).
+_FALLBACK_MODELS = ["llama-3.1-8b-instant", "meta-llama/llama-4-scout-17b-16e-instruct"]
 _counter = 0
 
 
@@ -917,7 +919,294 @@ async def chat(request: ChatRequest):
     # request can't let another overwrite the JSON file with stale state.
     lock = await _event_lock(event_id)
     async with lock:
-        return await _chat_turn(client, event_id, request)
+        return await _chat_turn_blueprint(event_id, request)
+
+
+def _identity_fields() -> list[dict]:
+    """Name + email are ALWAYS present — identity extraction, CSV import, team
+    formation, and magic-links all key off them."""
+    return [
+        {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True},
+        {"field_id": "email", "label": "Email", "type": "email", "required": True},
+        {"field_id": "phone", "label": "Phone", "type": "tel", "required": True},
+    ]
+
+
+# Format-keyword → extra fields appended after the identity fields. First match
+# wins; keys are matched against the blueprint's format_label (lowercased).
+_FORMAT_FIELDS: list[tuple[tuple[str, ...], list[dict]]] = [
+    (("esport", "gaming", "game", "tournament", "chess", "arena", "fifa", "valorant"), [
+        {"field_id": "in_game_name", "label": "In-Game Name / Gamer Tag", "type": "text", "required": True},
+        {"field_id": "platform_id", "label": "Platform / Account ID", "type": "text", "required": False},
+    ]),
+    (("symposium", "research", "paper", "abstract", "academic", "conference", "journal"), [
+        {"field_id": "institution", "label": "Institution / Affiliation", "type": "text", "required": True},
+        {"field_id": "paper_title", "label": "Paper / Abstract Title", "type": "text", "required": True},
+        {"field_id": "research_area", "label": "Research Area", "type": "text", "required": False},
+    ]),
+    (("grant", "scholarship", "fellowship", "funding"), [
+        {"field_id": "institution", "label": "Institution / Affiliation", "type": "text", "required": True},
+        {"field_id": "proposal_title", "label": "Proposal Title", "type": "text", "required": True},
+    ]),
+    (("pitch", "startup", "incubation", "investor", "venture", "business plan", "demo day"), [
+        {"field_id": "startup_name", "label": "Startup / Venture Name", "type": "text", "required": True},
+        {"field_id": "sector", "label": "Sector / Industry", "type": "text", "required": False},
+        {"field_id": "website", "label": "Website / Deck Link", "type": "url", "required": False},
+    ]),
+    (("ctf", "coding", "hackathon", "code", "ai challenge", "ml ", "robotics", "design", "datathon",
+      "ideathon", "case", "quiz"), [
+        {"field_id": "college", "label": "College / Organization", "type": "text", "required": True},
+        {"field_id": "github", "label": "GitHub / Portfolio URL", "type": "url", "required": False},
+        {"field_id": "skills", "label": "Skills (comma-separated)", "type": "text", "required": False},
+    ]),
+]
+
+
+def _smart_registration_fields(bp: dict) -> list[dict]:
+    """A format-appropriate default form when the AI didn't propose one (KI-1) —
+    derived from format_label, NOT the old fixed six-field generic form."""
+    fmt = (bp.get("format_label") or "").lower()
+    fields = _identity_fields()
+    for keys, extra in _FORMAT_FIELDS:
+        if any(k in fmt for k in keys):
+            fields += extra
+            break
+    else:
+        # Unknown format → a sensible general set.
+        fields += [
+            {"field_id": "college", "label": "College / Organization", "type": "text", "required": True},
+            {"field_id": "skills", "label": "Skills (comma-separated)", "type": "text", "required": False},
+        ]
+    return fields
+
+
+def _derive_registration_fields(bp: dict) -> list[dict]:
+    """The public sign-up form for a blueprint event: use the AI-proposed
+    `registration_fields` when present (KI-1), else a smart format-derived default.
+    For team events these render PER MEMBER on the public page."""
+    proposed = bp.get("registration_fields") or []
+    out: list[dict] = []
+    for f in proposed:
+        if not isinstance(f, dict):
+            continue
+        fid = str(f.get("field_id") or f.get("id") or "").strip()
+        label = str(f.get("label") or "").strip()
+        if not (fid or label):
+            continue
+        entry = {
+            "field_id": fid or re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
+            "label": label or fid.replace("_", " ").title(),
+            "type": str(f.get("type") or "text"),
+            "required": bool(f.get("required")),
+        }
+        opts = f.get("options")
+        if isinstance(opts, list) and opts:
+            entry["options"] = [str(o) for o in opts]
+        out.append(entry)
+    if not out:
+        return _smart_registration_fields(bp)
+    # Guarantee identity fields are present (downstream keys off them).
+    ids = {f["field_id"] for f in out}
+    head: list[dict] = []
+    if "email" not in ids:
+        head.append({"field_id": "email", "label": "Email", "type": "email", "required": True})
+    if "full_name" not in ids and "name" not in ids:
+        head.insert(0, {"field_id": "full_name", "label": "Full Name", "type": "text", "required": True})
+    return head + out
+
+
+def _effective_reg_window(window: dict) -> dict:
+    """Deterministic open-now guarantee (KI-3): a freshly deployed event must be
+    OPEN unless the organizer DELIBERATELY scheduled a future window. The LLM is
+    unreliable with dates — for "open now / closes in N days" it routinely emits a
+    garbled SAME-DAY window (e.g. opens 10:00, closes 14:00), which then reads as
+    "Registration has not opened yet". So:
+      - honor a future `opens_at` ONLY when it's clearly intentional (> 24h ahead);
+        anything nearer is treated as "open now" (opens_at = None → always open).
+      - a missing / past / implausibly-soon close defaults to now + 14 days, so an
+        open-now event stays open long enough to actually use."""
+    from app.services.time_enforcement import parse_dt
+
+    now = datetime.now(timezone.utc)
+    deliberate = timedelta(hours=24)
+    o = parse_dt(window.get("opens_at"))
+    c = parse_dt(window.get("closes_at"))
+
+    if o is not None and o > now + deliberate:
+        # A genuine future schedule — keep it, and make sure the close follows it.
+        opens = window.get("opens_at")
+        if c is None or c <= o:
+            c = o + timedelta(days=14)
+    else:
+        # "Open now": ignore the near-future/garbled open. Extend an implausibly
+        # soon (or missing/past) close so the window is actually usable.
+        opens = None
+        if c is None or c <= now + deliberate:
+            c = now + timedelta(days=14)
+    return {"opens_at": opens, "closes_at": c.isoformat()}
+
+
+def _blueprint_to_config(bp: dict, event_id: str) -> dict:
+    """Derive the minimal `config` the deploy path needs (event row fields +
+    registration window + form) from a blueprint, and stash the blueprint itself.
+    The generator builds rounds/rubrics/roles from `config['blueprint']`."""
+    stages = bp.get("stages") or []
+    reg = next((s for s in stages if (s.get("type") == "registration")), {}) or {}
+    parts = bp.get("participants") or {}
+    ts = parts.get("team_size") or {}
+    model = (parts.get("model") or "individual")
+    is_team = model == "team"
+    # KI-2: team events default to participant-formed teams (preformed) unless the
+    # organizer asked the platform to form them ("organizer"/"auto"). For the
+    # auto/organizer case, people register as INDIVIDUALS and CP-SAT
+    # (execute_team_formation) groups them, so individual registration must stay on.
+    team_reg = (bp.get("team_registration") or "preformed").lower()
+    auto_team = is_team and team_reg in ("organizer", "auto")
+    # Individuals register on their own for: individual events, AND team events whose
+    # teams the platform forms (auto/organizer). Only PREFORMED teams disallow it.
+    allow_individual = (not is_team) or auto_team
+    cap = parts.get("capacity") or {}
+    return {
+        "event_id": event_id,
+        "version": "1.0",
+        "blueprint": bp,
+        "core": {
+            "name": bp.get("event_name"),
+            "event_type": bp.get("format_label") or "event",
+            "description": bp.get("description") or "",
+        },
+        "participants": {
+            "model": model,
+            # KI-2: a team event needs at least 2 members (min two compulsory).
+            "team": {
+                "min_size": max(2, int(ts.get("min") or 2)) if is_team else (ts.get("min") or 1),
+                "max_size": int(ts.get("max") or 4),
+            },
+            "auto_team_matching_allowed": auto_team,
+            "individual_registration_allowed": allow_individual,
+            "capacity": {"max_participants": cap.get("max_participants") or 0},
+            "registration_form_fields": _derive_registration_fields(bp),
+        },
+        "timeline": {"registration": _effective_reg_window(reg.get("window") or {})},
+    }
+
+
+async def _chat_turn_blueprint(event_id: str, request: ChatRequest) -> dict:
+    """Blueprint-native conversational agent (Task 3). Builds/updates a format-
+    agnostic Blueprint from the free-form conversation (LLM), asks the VALIDATOR's
+    questions (not a fixed hackathon checklist), shows a live preview + confidence,
+    and persists the blueprint so it can be re-opened and AI-edited later. Resumes
+    from any prior blueprint stored under this event_id."""
+    from app.services.blueprint import Blueprint
+    from app.services.blueprint_synth import extract_blueprint_from_conversation, preview_text
+    from app.services.event_validator import validate_blueprint_sync
+
+    config = _load_config(event_id)
+    prior_bp = config.get("blueprint") or {}
+    prior_judges = (config.get("judging_panel") or {}).get("judges") or []
+    user_messages = [m.content.strip() for m in request.messages if m.role == "user" and m.content.strip()]
+
+    if not user_messages:
+        return {
+            "message": ("Describe the event you want to run — any format (hackathon, "
+                        "symposium, esports tournament, scholarship, pitch day, CTF…). "
+                        "Tell me how it runs: who registers, the stages, who evaluates, "
+                        "how people advance, and the dates."),
+            "event_config": config, "is_complete": False, "event_id": event_id,
+            "blueprint_preview": None,
+        }
+
+    bp, judges = await extract_blueprint_from_conversation(user_messages, prior_bp, prior_judges)
+    # Gate on DETERMINISTIC checks only — the LLM critic was inventing fake
+    # requirements (scoring for a communication stage, etc.) and tanking confidence.
+    verdict = validate_blueprint_sync(bp)
+
+    # ALWAYS ask for the actual evaluators: any human evaluation or a bracket needs
+    # real judges/referees/reviewers. If none were named yet, surface a prominent
+    # ask (deterministic, so it doesn't depend on the LLM remembering). Judges can
+    # also be added later on the Judges page, so this is a suggestion, not a hard gate.
+    needs_evaluators = any(
+        (s.type == "bracket") or
+        (s.type == "evaluation" and (s.scoring is None or s.scoring.method != "auto"))
+        for s in bp.stages
+    )
+    if needs_evaluators and not judges:
+        is_bracket = any(s.type == "bracket" for s in bp.stages)
+        who = "referees" if is_bracket else "judges"
+        ask_evaluators = (
+            f"Who will be the {who}? Share each one's name and email "
+            "(you can also add or bulk-upload them later on the Judges page)."
+        )
+        verdict["suggestions"] = [ask_evaluators] + [
+            s for s in (verdict.get("suggestions") or []) if s != ask_evaluators
+        ]
+
+    bp_dict = bp.to_dict()
+
+    config = _blueprint_to_config(bp_dict, event_id)
+    # Persist the named evaluators the agent extracted from chat (e.g. a pasted
+    # referee roster) so the generator creates them on deploy. Judges can ALSO be
+    # bulk-uploaded later on the Judges page.
+    config["judging_panel"] = {"judges": judges}
+    _save_config(event_id, config)
+
+    n_stages = len(bp_dict.get("stages") or [])
+    model = (bp.participants.model or "individual")
+    judge_labels = [r.label for r in bp.roles if r.kind == "judge"]
+    flow = " → ".join(s.label for s in bp.stages)
+    conf_pct = int((verdict.get("confidence") or 0) * 100)
+    is_edit = len(user_messages) > 1
+    soft = verdict.get("suggestions") or []
+
+    roles_bit = f" Evaluators: {', '.join(judge_labels)}." if judge_labels else ""
+    judges_bit = (
+        f" Captured {len(judges)} named evaluator"
+        f"{'s' if len(judges) != 1 else ''} ({', '.join(j['email'] for j in judges[:3])}"
+        f"{'…' if len(judges) > 3 else ''})." if judges else ""
+    )
+
+    if not verdict["ready"]:
+        # Structural gaps — ask the required question first (deterministic).
+        ack = "Got it. " if is_edit else ""
+        q = verdict["questions"][0] if verdict["questions"] else (
+            "Tell me a bit more about how the event runs — the stages in order, who "
+            "evaluates, and how participants advance."
+        )
+        message = ack + q
+    else:
+        lead = "Updated — " if is_edit else "Here's what I've mapped out: "
+        head = (
+            f"{lead}**{bp.event_name or 'Your event'}** — a {model} event in "
+            f"{n_stages} stages ({conf_pct}%).{roles_bit}{judges_bit}\n\nFlow: {flow}\n"
+        )
+        if soft:
+            extra = "\n".join(f"  • {s}" for s in soft[:3])
+            message = (
+                head + "\nIt's ready to deploy. A few details would sharpen it — answer "
+                f"any (or just say \"deploy\"):\n{extra}"
+            )
+        else:
+            message = (
+                head + "\nLooks complete and consistent — review it on the right and "
+                "deploy, or tell me any change."
+            )
+
+    return {
+        "message": message,
+        "event_config": config,
+        "is_complete": verdict["ready"],
+        "event_id": event_id,
+        "blueprint_preview": {
+            "summary": preview_text(bp, verdict),
+            "confidence": verdict["confidence"],
+            "questions": verdict["questions"],
+            "suggestions": verdict.get("suggestions", []),
+            "contradictions": verdict["contradictions"],
+            "missing": verdict["missing"],
+            "ready": verdict["ready"],
+            "blueprint": bp_dict,
+        },
+    }
 
 
 async def _chat_turn(client: Groq, event_id: str, request: ChatRequest) -> dict:
@@ -1045,12 +1334,35 @@ async def _chat_turn(client: Groq, event_id: str, request: ChatRequest) -> dict:
     # Re-check after merge — Python is authoritative
     message, _, is_complete = _next_question(config)
 
+    # Task 3 (§7c.2): a "here's what I understood" preview + confidence each turn.
+    # Deterministic (no LLM in the chat hot path) so it never adds latency or fails
+    # the turn; purely additive — existing clients ignore the extra keys.
+    blueprint_preview = None
+    try:
+        from app.services.blueprint_synth import config_to_blueprint, preview_text
+        from app.services.event_validator import validate_blueprint_sync
+
+        _bp = config_to_blueprint(config)
+        _verdict = validate_blueprint_sync(_bp)
+        blueprint_preview = {
+            "summary": preview_text(_bp, _verdict),
+            "confidence": _verdict["confidence"],
+            "questions": _verdict["questions"],
+            "contradictions": _verdict["contradictions"],
+            "missing": _verdict["missing"],
+            "ready": _verdict["ready"],
+            "blueprint": _bp.to_dict(),
+        }
+    except Exception as exc:  # never let the preview break a chat turn
+        print(f"[ai.chat] blueprint preview failed (ignored): {exc}")
+
     return {
         "message": message,
         "event_config": config,
         "is_complete": is_complete,
         "event_id": event_id,
         "_models_used": models_used,
+        "blueprint_preview": blueprint_preview,
     }
 
 
@@ -1342,11 +1654,30 @@ async def deploy_event(
     from app.models.approval import RequestType as _RequestType
     from app.services.approval_service import create_approval_request
 
+    # Task 3: attach the Universal Blueprint + its validation verdict to the
+    # deploy approval, so the generator (Stage 3) can build from it and the review
+    # screen (Stage 4) can show/edit it. Deterministic mapping + sync validation —
+    # no LLM in the hot deploy path. Backward-compatible: `config` still carried.
+    from app.services.blueprint import Blueprint as _Blueprint
+    from app.services.blueprint_synth import config_to_blueprint
+    from app.services.event_validator import validate_blueprint_sync
+
+    # Prefer the LLM-built blueprint persisted by the conversational agent; fall
+    # back to deriving one from the (legacy) config for backward-compat.
+    _bp_dict = config.get("blueprint")
+    _bp = _Blueprint.from_dict(_bp_dict) if _bp_dict else config_to_blueprint(config)
+    _verdict = validate_blueprint_sync(_bp)
+
     deploy_approval = await create_approval_request(
         db,
         event_id=str(event.id),
         request_type=_RequestType.event_deploy,
-        payload={"event_id": event_id, "config": config},
+        payload={
+            "event_id": event_id,
+            "config": config,
+            "blueprint": _bp.to_dict(),
+            "blueprint_validation": _verdict,
+        },
         requested_by=str(organizer_id),
     )
 

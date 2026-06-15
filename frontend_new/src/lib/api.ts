@@ -367,6 +367,18 @@ export async function getEvent(id: string): Promise<Event> {
   return apiFetch<Event>(`/events/${id}`);
 }
 
+export interface EventFeatures {
+  has_bracket: boolean;
+  has_teams: boolean;
+  has_live_rounds: boolean;
+  blueprint_driven: boolean;
+  format_label?: string | null;
+}
+
+export async function getEventFeatures(id: string): Promise<EventFeatures> {
+  return apiFetch<EventFeatures>(`/events/${id}/features`);
+}
+
 export async function updateEvent(
   id: string,
   body: UpdateEventBody
@@ -576,6 +588,7 @@ export interface JudgeAssignmentDetail {
   submission_id: string | null;
   submission_status: string | null;
   already_evaluated: boolean;
+  is_bracket: boolean;
 }
 
 export interface JudgeInviteDetail {
@@ -853,6 +866,30 @@ export async function uploadJudgesCsv(
   return uploadCsv(`/judges/${eventId}/upload-csv`, file);
 }
 
+export async function uploadTeamsCsv(
+  eventId: string,
+  file: File
+): Promise<{ message: string; teams: number; members: number; skipped: number }> {
+  return uploadCsv(`/teams/${eventId}/upload-csv`, file);
+}
+
+export async function downloadTeamsSampleCsv(eventId: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/teams/${eventId}/sample-csv`, {
+    headers: headers as Record<string, string>,
+  });
+  if (!res.ok) throw new Error(`Could not download sample CSV (${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "teams_sample.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 // Fetch the event-specific participant CSV template (#3) and trigger a download.
 // Headers come from getAuthHeaders (organizer-only endpoint); the file is built
 // from the event's registration fields so it matches what the importer expects.
@@ -871,6 +908,131 @@ export async function downloadParticipantsSampleCsv(eventId: string): Promise<vo
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// ─── Tournament bracket (Task 3, 5c) ─────────────────────────────────────────
+
+export interface BracketSide {
+  team_id: string | null;
+  name: string;
+}
+export interface BracketMatch {
+  id: string;
+  match_index: number;
+  side_a: BracketSide;
+  side_b: BracketSide;
+  winner_team_id: string | null;
+  score_a: number | null;
+  score_b: number | null;
+  scheduled_at: string | null;
+  match_link: string | null;
+  status: string;
+}
+export interface BracketRound {
+  round_number: number;
+  matches: BracketMatch[];
+}
+export interface Bracket {
+  rounds: BracketRound[];
+}
+export interface MyMatch {
+  match_id: string;
+  round_number: number;
+  opponent: string;
+  scheduled_at: string | null;
+  match_link: string | null;
+  status: string;
+  winner_team_id: string | null;
+}
+
+export async function getBracket(eventId: string): Promise<Bracket> {
+  return apiFetch<Bracket>(`/matches/events/${eventId}/bracket`);
+}
+
+export async function generateBracket(
+  eventId: string,
+  roundId: string,
+  seedByScore = false
+): Promise<{ created: number; rounds?: number; skipped?: boolean }> {
+  return apiFetch(`/matches/events/${eventId}/generate`, {
+    method: "POST",
+    body: JSON.stringify({ round_id: roundId, seed_by_score: seedByScore }),
+  });
+}
+
+export async function patchMatch(
+  matchId: string,
+  body: {
+    match_link?: string;
+    scheduled_at?: string;
+    winner_team_id?: string;
+    score_a?: number;
+    score_b?: number;
+  }
+): Promise<Bracket> {
+  return apiFetch<Bracket>(`/matches/${matchId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getMyMatches(eventId: string): Promise<MyMatch[]> {
+  return apiFetch<MyMatch[]>(`/matches/events/${eventId}/my-matches`);
+}
+
+// ─── Quiz / Question-Bank (Task 3, #8) ───────────────────────────────────────
+
+export interface QuizQuestion {
+  id?: string;
+  number?: number;
+  text: string;
+  options: string[];
+  marks: number;
+  correct_answer?: string | null;
+}
+export interface QuizBank {
+  is_quiz: boolean;
+  questions_per_paper: number;
+  bank_size: number;
+  questions: QuizQuestion[];
+}
+export interface QuizPaper {
+  paper_id?: string;
+  total_marks?: number;
+  questions: QuizQuestion[];
+}
+
+export async function uploadQuizBank(roundId: string, file: File): Promise<{ message: string; count: number }> {
+  return uploadCsv(`/quiz/rounds/${roundId}/bank`, file);
+}
+export async function uploadQuizBankText(
+  roundId: string, text: string, filename?: string, questionsPerPaper?: number
+): Promise<{ message: string; count: number }> {
+  return apiFetch(`/quiz/rounds/${roundId}/bank-text`, {
+    method: "POST",
+    body: JSON.stringify({ text, filename, questions_per_paper: questionsPerPaper }),
+  });
+}
+export async function setQuizConfig(roundId: string, questionsPerPaper: number): Promise<{ questions_per_paper: number; bank_size: number }> {
+  return apiFetch(`/quiz/rounds/${roundId}/config`, {
+    method: "PATCH",
+    body: JSON.stringify({ questions_per_paper: questionsPerPaper }),
+  });
+}
+export async function generateQuizPapers(roundId: string): Promise<{ created: number; judges_assigned: number }> {
+  return apiFetch(`/quiz/rounds/${roundId}/generate`, { method: "POST" });
+}
+export async function listQuizQuestions(roundId: string): Promise<QuizBank> {
+  return apiFetch<QuizBank>(`/quiz/rounds/${roundId}/questions`);
+}
+export async function getMyQuizPaper(roundId: string): Promise<QuizPaper> {
+  return apiFetch<QuizPaper>(`/quiz/rounds/${roundId}/my-paper`);
+}
+export async function getTeamQuizPaper(roundId: string, teamId: string): Promise<QuizPaper> {
+  return apiFetch<QuizPaper>(`/quiz/rounds/${roundId}/teams/${teamId}/paper`);
+}
+export async function autoGradeQuiz(submissionId: string): Promise<{ graded: boolean; total?: number; reason?: string; results?: Array<{ number: number; correct: boolean; awarded: number }> }> {
+  return apiFetch(`/quiz/submissions/${submissionId}/auto-grade`, { method: "POST" });
 }
 
 // ─── Utility ─────────────────────────────────────────────────────────────────

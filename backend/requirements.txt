@@ -13,6 +13,7 @@ python-multipart
 passlib[bcrypt]
 scikit-learn
 groq
+google-genai
 absl-py==2.4.0
 resend
 alembic==1.18.4

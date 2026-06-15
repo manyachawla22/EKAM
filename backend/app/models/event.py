@@ -105,6 +105,12 @@ class Event(Base):
     # Advisory at the public edge — hard gates are window/capacity/uniqueness.
     eligibility = Column(JSONB, nullable=True)
 
+    # Task 3 (Event OS): the approved Universal Event Blueprint that drives a
+    # generic (non-hackathon) pipeline. NULL ⇒ legacy/hackathon event → build_steps
+    # falls back to the hardcoded default (backward-compatible). Frozen after the
+    # generator runs (edits happen pre-deploy on the review screen).
+    blueprint = Column(JSONB, nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now()
@@ -183,6 +189,35 @@ class Round(Base):
     # only when the advancement is executed (the approval is the only editor);
     # leaderboard / pipeline / approvals views read it read-only. Null until then.
     cutoff_score = Column(Float, nullable=True)
+
+    # Task 3 (automated scoring): "human" (judges score via rubric) or "auto"
+    # (scores ingested from an autograder/scoreboard → submission.final_score, no
+    # judge assignment). Set by the generator from the blueprint's evaluation
+    # stage scoring.method. "human" preserves all existing behaviour.
+    scoring_mode = Column(String, default="human", server_default="human", nullable=False)
+
+    # Task 3 (blind review): when True, reviewer-facing views hide the team/author
+    # identity (shown as "Submission #…"). Set by the generator from a blueprint
+    # evaluation stage's behaviors ["anonymous_review"]. False preserves behaviour.
+    anonymous = Column(Boolean, default=False, server_default="false", nullable=False)
+
+    # Task 3 (live rounds) — a feature flag, OFF by default. When False (default)
+    # the round runs the normal flow: participants upload a submission, then judges
+    # grade it. When True the round is LIVE-JUDGED: there is NO participant
+    # submission step — a referee/judge scores performances, matches, debates,
+    # quizzes, or pitches in real time. The pipeline then auto-creates a placeholder
+    # Submission per active team so the team-keyed evaluation/leaderboard machinery
+    # still works. Set by the generator: True when the blueprint round-group has an
+    # evaluation but NO submission stage.
+    live_judging = Column(Boolean, default=False, server_default="false", nullable=False)
+
+    # Task 3 (quiz/question-bank, feature #8) — a feature flag, OFF by default. When
+    # True the round draws from a per-round question bank (`questions` table): each
+    # team gets a generated QuestionPaper (a subset of `questions_per_paper`
+    # questions) shown on their dashboard; they upload one answer file; the judge
+    # grades per-question (or the AI auto-checks against each question's answer).
+    is_quiz = Column(Boolean, default=False, server_default="false", nullable=False)
+    questions_per_paper = Column(Integer, default=0, server_default="0", nullable=False)
 
     created_at = Column(
         DateTime(timezone=True),

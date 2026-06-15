@@ -8,6 +8,7 @@ from uuid import UUID
 from app.models.judge import Judge, JudgeAssignment
 from app.models.event import Round
 from app.models.team import Team
+from app.models.match import Match
 from app.models.submission import Submission, Evaluation
 from app.schemas.judge import JudgeAssignmentDetail
 
@@ -113,6 +114,13 @@ async def get_judge_assignments_detail(
     if not assignments:
         return []
 
+    # Rounds that have a tournament bracket (Match rows) are scored through the
+    # referee bracket card, not a participant submission — flag them so the judge
+    # dashboard doesn't show "awaiting submission" for a live match.
+    bracket_round_ids = set((await db.execute(
+        select(Match.round_id).where(Match.round_id.in_([r.id for r in rounds])).distinct()
+    )).scalars().all())
+
     panel_team_ids = {a.team_id for a in assignments}
     # Reuse the real assignment row id when one exists for a (team, round) pair;
     # otherwise synthesize a deterministic id (the frontend only uses it as a
@@ -159,16 +167,23 @@ async def get_judge_assignments_detail(
             assignment_id = real_assignment_id.get((team_id, rnd.id)) or uuid.uuid5(
                 uuid.NAMESPACE_URL, f"{judge_id}:{team_id}:{rnd.id}"
             )
+            # Blind review (5b): hide author identity in an anonymous round.
+            team_name = (
+                f"Submission #{str(sub.id if sub else team.id)[:6].upper()}"
+                if getattr(rnd, "anonymous", False)
+                else team.name
+            )
             details.append(JudgeAssignmentDetail(
                 assignment_id=assignment_id,
                 round_id=rnd.id,
                 round_name=rnd.name,
                 round_status=round_status,
                 team_id=team_id,
-                team_name=team.name,
+                team_name=team_name,
                 submission_id=sub.id if sub else None,
                 submission_status=sub.status.value if sub and hasattr(sub.status, "value") else (str(sub.status) if sub else None),
                 already_evaluated=sub.id in evaluated_sub_ids if sub else False,
+                is_bracket=rnd.id in bracket_round_ids,
             ))
 
     return details

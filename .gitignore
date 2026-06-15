@@ -159,8 +159,7 @@ temp/
 # Certificates & reports
 *.pdf
 *.cert
-certificates/
-reports/
+
 
 # Keep example files
 !.env.example
@@ -175,6 +174,11 @@ demo
 frontend_new/package-lock.json
 
 ai_error.md
+ai_event_run.md
+ai_expect.md
+ai.md
+possible.md
+referee.csv
 error2.md
 errors.md
 theme.md

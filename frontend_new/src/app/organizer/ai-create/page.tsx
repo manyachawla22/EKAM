@@ -3,7 +3,7 @@
 export const dynamic = "force-dynamic";
 
 import { useState, useRef, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send,
@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { aiChat, aiDeploy } from "@/lib/api";
-import type { AIChatMessage, EventConfig } from "@/types";
+import type { AIChatMessage, EventConfig, BlueprintPreview } from "@/types";
 import Button from "@/components/ui/Button";
 
 interface Message {
@@ -167,7 +167,26 @@ export default function AICreatePage() {
   const [isComplete, setIsComplete] = useState(false);
   const [deployedEventId, setDeployedEventId] = useState<string | null>(null);
   const [inputFocus, setInputFocus] = useState(false);
+  const [preview, setPreview] = useState<BlueprintPreview | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+
+  // AI-EDIT: if opened as /organizer/ai-create?event=<id>, resume that event's
+  // stored blueprint so the user can prompt changes (the backend loads it by id).
+  useEffect(() => {
+    const editId = searchParams.get("event");
+    if (editId) {
+      setEventConfig({ event_id: editId } as EventConfig);
+      setMessages([
+        {
+          role: "assistant",
+          content:
+            "I've loaded this event's blueprint. Tell me what you'd like to change — e.g. \"add a mentor round\", \"make it individual\", \"blind review for round 1\", \"top 5 advance\".",
+        },
+      ]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -201,6 +220,10 @@ export default function AICreatePage() {
 
       if (response.event_config) {
         setEventConfig(response.event_config);
+      }
+
+      if (response.blueprint_preview) {
+        setPreview(response.blueprint_preview);
       }
 
       if (response.is_complete) {
@@ -329,13 +352,61 @@ export default function AICreatePage() {
         )}
       </div>
 
-      {eventConfig && (
+      {/* Blueprint preview — the agent's "here's what I understood" + confidence */}
+      {preview && (
+        <div
+          style={{
+            marginBottom: "1rem",
+            borderRadius: "0.75rem",
+            border: "1px solid #222",
+            background: "#111",
+            padding: "1rem 1.25rem",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+            <strong style={{ fontSize: "0.85rem", color: "#fff" }}>What I understood</strong>
+            <span style={{ fontSize: "0.78rem", fontWeight: 700, color: preview.confidence >= 0.8 ? "#4ade80" : "#fbbf24" }}>
+              {Math.round((preview.confidence ?? 0) * 100)}% confident
+            </span>
+          </div>
+          <pre
+            style={{
+              margin: "0.5rem 0 0", whiteSpace: "pre-wrap", fontFamily: "inherit",
+              fontSize: "0.8rem", color: "rgba(255,255,255,0.75)", lineHeight: 1.5,
+            }}
+          >
+            {preview.summary}
+          </pre>
+          {preview.contradictions?.length > 0 && (
+            <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "rgba(250,204,21,0.85)" }}>
+              ⚠ {preview.contradictions.join("; ")}
+            </p>
+          )}
+          {preview.missing?.length > 0 && (
+            <p style={{ margin: "0.4rem 0 0", fontSize: "0.75rem", color: "rgba(255,255,255,0.45)" }}>
+              Still need: {preview.missing.join("; ")}
+            </p>
+          )}
+          {(preview.suggestions?.length ?? 0) > 0 && (
+            <div style={{ margin: "0.5rem 0 0", fontSize: "0.75rem", color: "rgba(255,255,255,0.55)" }}>
+              <span style={{ color: "rgba(255,255,255,0.4)" }}>To refine (optional):</span>
+              <ul style={{ margin: "0.2rem 0 0", paddingLeft: "1.1rem" }}>
+                {(preview.suggestions ?? []).map((s, i) => (
+                  <li key={i} style={{ marginTop: "0.1rem" }}>{s}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {eventConfig && !preview && (
         <div style={{ marginBottom: "1rem" }}>
           <ConfigPreview config={eventConfig} />
         </div>
       )}
 
-      {isComplete && !deployedEventId && (
+      {(isComplete || preview) && !deployedEventId && (
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -355,11 +426,13 @@ export default function AICreatePage() {
             <p
               style={{
                 fontWeight: 600,
-                color: "#4ade80",
+                color: isComplete || preview?.ready ? "#4ade80" : "#fbbf24",
                 margin: 0,
               }}
             >
-              Event configuration complete!
+              {isComplete || preview?.ready
+                ? "Event blueprint ready!"
+                : "You can deploy now and refine in the Blueprint Review"}
             </p>
             <p
               style={{
@@ -368,7 +441,7 @@ export default function AICreatePage() {
                 marginTop: "0.125rem",
               }}
             >
-              Ready to deploy. Clicking deploy submits the event for approval — it goes live once you approve it in the Approvals panel.
+              Deploy submits the event for approval — review/edit the blueprint there, then approve to go live. You can also keep chatting to refine it first.
             </p>
           </div>
           <Button variant="primary" loading={deploying} onClick={handleDeploy}>

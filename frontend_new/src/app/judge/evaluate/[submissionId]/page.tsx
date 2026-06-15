@@ -12,6 +12,7 @@ import type { Evaluation, RubricCriterion, AssessmentGuide } from "@/types";
 import Button from "@/components/ui/Button";
 import { Textarea } from "@/components/ui/Input";
 import Navbar from "@/components/layout/Navbar";
+import QuizGradeCard from "@/components/quiz/QuizGradeCard";
 
 export default function EvaluatePage() {
   const { submissionId } = useParams<{ submissionId: string }>();
@@ -33,6 +34,7 @@ export default function EvaluatePage() {
   const [critScores, setCritScores] = useState<Record<string, number>>({});
   const [guide, setGuide] = useState<AssessmentGuide | null>(null);
   const [guideOpen, setGuideOpen] = useState(true);
+  const [quizContext, setQuizContext] = useState<{ roundId: string; teamId: string } | null>(null);
 
   // Total = sum of per-criterion scores. Max = sum of criteria max_score.
   const totalScore = criteria.reduce((sum, c) => sum + (critScores[c.id] ?? 0), 0);
@@ -61,6 +63,13 @@ export default function EvaluatePage() {
         if (submission?.round_id) {
           crit = await listRoundRubric(submission.round_id).catch(() => []);
           setCriteria(crit);
+        }
+
+        // Quiz context: if this round has a question paper for the team, the
+        // QuizGradeCard surfaces the answer key + AI auto-grade (renders nothing
+        // for non-quiz rounds).
+        if (submission?.round_id && submission?.team_id) {
+          setQuizContext({ roundId: submission.round_id, teamId: submission.team_id });
         }
 
         // Load the AI-assisted assessment guide for this submission's challenge.
@@ -230,6 +239,15 @@ export default function EvaluatePage() {
                 </p>
               )}
             </div>
+          )}
+
+          {/* Quiz paper + answer key (quiz rounds only) */}
+          {!loading && quizContext && (
+            <QuizGradeCard
+              roundId={quizContext.roundId}
+              teamId={quizContext.teamId}
+              submissionId={submissionId}
+            />
           )}
 
           {/* Assessment guide */}

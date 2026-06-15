@@ -11,7 +11,6 @@ regex fallback for the high-value fields (email / phone / linkedin) so the
 feature degrades gracefully when the LLM is unavailable. Never raises.
 """
 
-import asyncio
 import json
 import re
 from typing import Any
@@ -38,12 +37,33 @@ def extract_text(path: str) -> str:
         return ""
 
 
+def _guess_name(text: str) -> str | None:
+    """Best-effort name: the first non-empty line that looks like a person's name
+    (2–4 mostly-alphabetic words, not an email/phone/url/section header). Resumes
+    almost always lead with the candidate's name."""
+    headers = ("resume", "curriculum", "cv", "profile", "summary", "objective", "contact")
+    for raw in text.splitlines()[:8]:
+        line = raw.strip(" \t|•-—:")
+        if not line or len(line) > 60:
+            continue
+        low = line.lower()
+        if "@" in line or any(ch.isdigit() for ch in line) or "://" in low:
+            continue
+        if any(h in low for h in headers):
+            continue
+        words = line.split()
+        if 2 <= len(words) <= 4 and all(re.fullmatch(r"[A-Za-z.'-]+", w) for w in words):
+            return line
+    return None
+
+
 def _regex_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
     """Deterministic fallback: fill email/phone/linkedin/name by field type+id heuristics."""
     out: dict[str, Any] = {}
     email = EMAIL_RE.search(text)
     phone = PHONE_RE.search(text)
     linkedin = LINKEDIN_RE.search(text)
+    name = _guess_name(text)
 
     for f in form_fields:
         if not isinstance(f, dict):
@@ -60,13 +80,19 @@ def _regex_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
             out[fid] = phone.group(0).strip()
         elif "linkedin" in hay and linkedin:
             out[fid] = linkedin.group(0)
+        elif ("name" in hay) and "user" not in hay and "team" not in hay and name:
+            # full_name / name / your name — but not username / team name / in-game name.
+            if "game" not in hay and "screen" not in hay and "nick" not in hay:
+                out[fid] = name
     return out
 
 
-def _llm_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
-    """Ask the LLM to map resume text onto the form fields. Returns {} on any error."""
+async def _llm_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
+    """Ask the LLM to map resume text onto the form fields, via the resilient
+    llm_client seam (Gemini primary, automatic Groq fallback). Returns {} on any
+    error so the regex backstop can still fill the high-value fields."""
     try:
-        from groq import Groq
+        from app.services import llm_client
 
         # Trim very long resumes to keep the prompt cheap/fast.
         snippet = text[:6000]
@@ -92,19 +118,7 @@ def _llm_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
             f"RESUME TEXT:\n{snippet}\n\n"
             "Return the JSON object now."
         )
-        client = Groq(api_key=settings.GROQ_API_KEY)
-        resp = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.0,
-            max_tokens=800,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or "{}"
-        data = json.loads(raw)
+        data = await llm_client.complete_json(system, user, max_tokens=800)
         if not isinstance(data, dict):
             return {}
         # Keep only known field_ids; drop empties.
@@ -114,7 +128,8 @@ def _llm_prefill(text: str, form_fields: list[dict]) -> dict[str, Any]:
             for k, v in data.items()
             if k in valid_ids and v not in (None, "", [], {})
         }
-    except Exception:
+    except Exception as exc:
+        print(f"[resume_service] LLM prefill failed (regex backstop will run): {exc}")
         return {}
 
 
@@ -123,8 +138,7 @@ async def parse_resume(text: str, form_fields: list[dict] | None) -> dict[str, A
     if not text or not form_fields:
         return {}
     try:
-        # LLM mapping in a thread (the groq client is sync); regex as the backstop.
-        llm = await asyncio.to_thread(_llm_prefill, text, form_fields)
+        llm = await _llm_prefill(text, form_fields)
     except Exception:
         llm = {}
     regex = _regex_prefill(text, form_fields)

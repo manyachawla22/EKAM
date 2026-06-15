@@ -18,8 +18,26 @@ class Settings(BaseSettings):
     MOCK_AUTH: bool
     DEBUG: bool
      
-    GROQ_API_KEY: str 
-    GROQ_MODEL: str
+    GROQ_API_KEY: str
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+
+    # ----- Task-3 Event-OS agent LLM seam (llm_client.py) -----
+    # Which provider answers the Task-3 blueprint/critic calls. "groq" (default)
+    # uses GROQ_* above; "gemini" uses GEMINI_API_KEY; "anthropic" uses
+    # ANTHROPIC_API_KEY. Everything else in the app keeps calling Groq directly.
+    LLM_PROVIDER: str = "gemini"  # "groq" | "gemini" | "anthropic"
+    # Optional explicit model id for the seam. Empty ⇒ the provider's default
+    # (gemini-2.5-flash / claude-sonnet-4-6 / GROQ_MODEL). NOTE: free-tier keys
+    # created in a NEW AI Studio project have quota for gemini-2.5-flash but often
+    # ZERO for gemini-2.0-flash — use 2.5-flash.
+    LLM_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_KEY: str = ""
+    # Optional pool of Gemini keys (comma-separated) to multiply the free-tier
+    # daily quota (20 req/day/key). On a 429 RESOURCE_EXHAUSTED / 503 the client
+    # rotates to the next key before falling back to Groq. Keys MUST come from
+    # SEPARATE Google Cloud projects — keys in the same project share one quota.
+    GEMINI_API_KEYS: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
     # ----- JWT Configuration -----
     JWT_SECRET_KEY: str 

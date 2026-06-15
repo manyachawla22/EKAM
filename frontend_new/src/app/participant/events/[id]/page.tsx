@@ -32,6 +32,8 @@ import { EventStatusBadge, EventStageBadge } from "@/components/ui/Badge";
 import Navbar from "@/components/layout/Navbar";
 import TeamDetailModal from "@/components/ui/TeamDetailModal";
 import DynamicPipeline from "@/components/pipeline/DynamicPipeline";
+import MyMatchesCard from "@/components/bracket/MyMatchesCard";
+import QuizPaperCard from "@/components/quiz/QuizPaperCard";
 import { getPipelineState } from "@/lib/api";
 
 const card: React.CSSProperties = {
@@ -417,6 +419,9 @@ export default function ParticipantEventDetailPage() {
             <DynamicPipeline eventId={id} />
           </div>
 
+          {/* Your bracket matches (renders only if the event has a bracket) */}
+          <MyMatchesCard eventId={id} />
+
           {/* Your team */}
           {dashboard?.team && (
             <>
@@ -686,6 +691,9 @@ export default function ParticipantEventDetailPage() {
                       </p>
                     )}
                   </div>
+
+                  {/* Your question paper (quiz rounds only — renders nothing otherwise) */}
+                  {selectedRound && <QuizPaperCard roundId={selectedRound} />}
                   <div>
                     <label style={{ display: "block", marginBottom: "0.375rem", fontSize: "0.875rem", fontWeight: 500, color: "rgba(255,255,255,0.7)" }}>Project Links</label>
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>

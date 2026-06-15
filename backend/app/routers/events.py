@@ -236,6 +236,48 @@ async def get_event(
     )
 
 
+@router.get("/{event_id}/features")
+async def get_event_features(
+    event_id: UUID,
+    auth: AuthContext = Depends(get_current_actor),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-event feature flags derived from the event + its blueprint, so the UI
+    only shows what an event actually uses (e.g. the Bracket tab only for
+    tournaments). Cheap; safe for any actor with event access."""
+    if auth.actor_type != "organizer" and not auth.can_access_event(str(event_id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No event access")
+
+    event = (await db.execute(select(EventModel).where(EventModel.id == event_id))).scalars().first()
+    if not event:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    bp = event.blueprint or {}
+    stages = bp.get("stages") or []
+    types = [(s.get("type") or "").lower() for s in stages]
+    is_team = (event.participants_model or "individual") == "team"
+
+    # A round is live-judged when an evaluation has no submission since the previous
+    # evaluation (mirrors the generator's live_judging derivation).
+    has_live = False
+    pending_sub = False
+    for t in types:
+        if t == "submission":
+            pending_sub = True
+        elif t == "evaluation":
+            if not pending_sub:
+                has_live = True
+            pending_sub = False
+
+    return {
+        "has_bracket": "bracket" in types,        # show the Bracket tab
+        "has_teams": is_team,                       # Teams tab meaningful for team events
+        "has_live_rounds": has_live,               # any live-judged round
+        "blueprint_driven": bool(event.blueprint), # Event OS vs legacy hackathon
+        "format_label": bp.get("format_label"),
+    }
+
+
 @router.put(
     "/{event_id}",
     response_model=Event,

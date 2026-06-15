@@ -317,14 +317,76 @@ async def _execute_event_deploy(db: AsyncSession, approval: ApprovalRequest) -> 
     event.status = EventStatus.active
     if event.stage is None:
         event.stage = EventStage.registration
+
+    # Task 3: persist the approved blueprint onto the event so the GENERIC pipeline
+    # activates — `build_steps` reads `event.blueprint` and falls back to the
+    # hackathon default only when it's NULL. This is the wire that turns a deployed
+    # blueprint into a running blueprint-driven event. Frozen after this point.
+    blueprint = payload.get("blueprint")
+    if blueprint:
+        event.blueprint = blueprint
+        # Apply the (possibly EDITED) public registration form from the reviewed
+        # blueprint so form edits made on the Blueprint Review screen actually take
+        # effect on approval (KI-1). Derives a smart per-format default when the
+        # blueprint proposed none. Lazy import (ai.py imports this module).
+        try:
+            from app.routers.ai import _derive_registration_fields
+
+            event.registration_form_fields = _derive_registration_fields(blueprint)
+        except Exception as exc:
+            print(f"[approval_service] registration-form derive on deploy failed: {exc}")
     await db.commit()
 
     # Materialize rounds/judges/rubric only if not already done (idempotent).
     existing_round = (
         await db.execute(select(Round).where(Round.event_id == event.id).limit(1))
     ).scalars().first()
-    if existing_round is None and config:
-        from app.routers.ai import _materialize_rounds_judges_rubric
-
+    if existing_round is None:
         await db.refresh(event)
-        await _materialize_rounds_judges_rubric(db, event, config)
+        if blueprint:
+            # Blueprint-driven materialization (Task 3): rounds/rubrics straight from
+            # the (possibly edited) blueprint so they pair 1:1 with build_steps;
+            # judges from config with role labels. Reproduces the hackathon flow for
+            # a hackathon blueprint (theme_selection/judge_assignment stages present).
+            from app.services.event_generator import generate_from_blueprint
+
+            await generate_from_blueprint(db, event, blueprint, config)
+        elif config:
+            from app.routers.ai import _materialize_rounds_judges_rubric
+
+            await _materialize_rounds_judges_rubric(db, event, config)
+
+        # Task 3: draft the registration/welcome touchpoint for blueprint events
+        # through the existing approval-gated email_batch flow (first deploy only).
+        if blueprint:
+            try:
+                from app.services.communication_service import fire_stage_communications
+
+                await db.refresh(event)
+                await fire_stage_communications(db, event, "registration")
+            except Exception as exc:
+                print(f"[approval_service] deploy welcome communications failed: {exc}")
+
+    # Task 3 (roles-as-labels): when the blueprint defines a single evaluator role
+    # (e.g. Reviewer / Investor / Jury), stamp it onto the event's judges. Pure
+    # label — same Judge account/permissions; the judging UI shows it. Multi-role
+    # per-judge assignment is a later generator enhancement.
+    if blueprint:
+        try:
+            from app.models.judge import Judge
+
+            judge_roles = [r for r in (blueprint.get("roles") or []) if r.get("kind") == "judge"]
+            if len(judge_roles) == 1 and (judge_roles[0].get("label") or "").strip():
+                label = judge_roles[0]["label"].strip()
+                judges = (
+                    await db.execute(select(Judge).where(Judge.event_id == event.id))
+                ).scalars().all()
+                changed = False
+                for j in judges:
+                    if not j.role_label or j.role_label == "Judge":
+                        j.role_label = label
+                        changed = True
+                if changed:
+                    await db.commit()
+        except Exception as exc:
+            print(f"[approval_service] applying judge role_label failed: {exc}")

@@ -66,6 +66,10 @@ export interface Round {
   start_date?: string;
   end_date?: string;
   cutoff_score?: number | null; // single source of truth for advancement (#13)
+  is_quiz?: boolean;
+  live_judging?: boolean;
+  anonymous?: boolean;
+  scoring_mode?: string;
   created_at?: string;
 }
 
@@ -81,6 +85,8 @@ export interface Participant {
   phone?: string;
   is_verified?: boolean;
   created_at?: string;
+  /** Tailored registration-form answers (field_id → value), per the event's form. */
+  registration_data?: Record<string, unknown> | null;
 }
 
 export interface TeamMember {
@@ -130,6 +136,7 @@ export interface Judge {
   email: string;
   institution?: string;
   expertise?: string[];
+  role_label?: string; // Task 3: Reviewer / Investor / Jury / … ("Judge" default)
   rating?: number;
   is_verified?: boolean;
   created_at?: string;
@@ -180,11 +187,23 @@ export interface AIChatMessage {
   content: string;
 }
 
+export interface BlueprintPreview {
+  summary: string;
+  confidence: number;
+  questions: string[];
+  suggestions?: string[];
+  contradictions: string[];
+  missing: string[];
+  ready: boolean;
+  blueprint: Record<string, unknown>;
+}
+
 export interface AIChatResponse {
   message: string;
   event_config: EventConfig | null;
   is_complete: boolean;
   event_id?: string;
+  blueprint_preview?: BlueprintPreview | null;
 }
 
 export interface EventConfig {

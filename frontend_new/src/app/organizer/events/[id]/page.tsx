@@ -8,7 +8,7 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   Users, Layers, Send, UserCheck, BarChart2, Edit2, ArrowLeft,
-  Trophy, Trash2, Save, ShieldCheck, AlertTriangle, CheckCircle2, Award, Plus,
+  Trophy, Trash2, Save, ShieldCheck, AlertTriangle, CheckCircle2, Award, Plus, Bot, GitBranch,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -24,6 +24,8 @@ import {
   autoAssignJudges,
   getPipelineState,
   advancePipeline,
+  getEventFeatures,
+  type EventFeatures,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { Event, EventStatus, Round, OrganizerDashboard, Theme, PipelineState } from "@/types";
@@ -73,6 +75,7 @@ export default function EventDetailPage() {
   const [dashboard, setDashboard] = useState<OrganizerDashboard | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const [rounds, setRounds] = useState<Round[]>([]);
+  const [features, setFeatures] = useState<EventFeatures | null>(null);
   const [themes, setThemes] = useState<Theme[]>([]);
   const [themeName, setThemeName] = useState("");
   const [themeDesc, setThemeDesc] = useState("");
@@ -99,18 +102,20 @@ export default function EventDetailPage() {
     if (!id) return;
     setLoading(true);
     try {
-      const [ev, dash, rds, thms, pipe] = await Promise.all([
+      const [ev, dash, rds, thms, pipe, feats] = await Promise.all([
         getEvent(id),
         getOrganizerDashboard(id).catch(() => null),
         listRounds(id).catch(() => [] as Round[]),
         listThemes(id).catch(() => [] as Theme[]),
         getPipelineState(id).catch(() => null),
+        getEventFeatures(id).catch(() => null),
       ]);
       setEvent(ev);
       setDashboard(dash);
       setRounds(rds);
       setThemes(thms);
       setPipeline(pipe);
+      setFeatures(feats);
       setEditForm({
         name: ev.name, type: ev.type, description: ev.description,
         status: ev.status, max_participants: ev.max_participants,
@@ -316,6 +321,13 @@ export default function EventDetailPage() {
               <p style={{ marginTop: "0.75rem", fontSize: "0.875rem", color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>{event.description}</p>
             </div>
             <div style={{ display: "flex", gap: "0.5rem", flexShrink: 0 }}>
+              <button
+                onClick={() => router.push(`/organizer/ai-create?event=${id}`)}
+                title="Edit this event's blueprint with AI"
+                style={{ display: "flex", alignItems: "center", gap: "0.35rem", height: "2.25rem", padding: "0 0.7rem", borderRadius: "0.5rem", border: "1px solid rgba(232,80,58,0.3)", background: "rgba(232,80,58,0.1)", color: "#e8503a", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer" }}
+              >
+                <Bot size={15} /> Edit with AI
+              </button>
               <button onClick={() => setEditOpen(true)} title="Edit event" style={{ display: "flex", height: "2.25rem", width: "2.25rem", alignItems: "center", justifyContent: "center", borderRadius: "0.5rem", border: "1px solid #222", background: "transparent", color: "rgba(255,255,255,0.4)", cursor: "pointer" }}>
                 <Edit2 size={16} />
               </button>
@@ -615,6 +627,9 @@ export default function EventDetailPage() {
               { label: "Participants", icon: <Users size={18} />, href: `/organizer/events/${id}/participants` },
               { label: "Teams", icon: <Trophy size={18} />, href: `/organizer/events/${id}/teams` },
               { label: "Judges", icon: <UserCheck size={18} />, href: `/organizer/events/${id}/judges` },
+              ...(features?.has_bracket
+                ? [{ label: "Bracket", icon: <GitBranch size={18} />, href: `/organizer/events/${id}/bracket` }]
+                : []),
               { label: "Submissions", icon: <Send size={18} />, href: `/organizer/events/${id}/submissions` },
               { label: "Leaderboard", icon: <Award size={18} />, href: `/organizer/events/${id}/leaderboard` },
               { label: "Approvals", icon: <ShieldCheck size={18} />, href: `/organizer/events/${id}/approvals` },
