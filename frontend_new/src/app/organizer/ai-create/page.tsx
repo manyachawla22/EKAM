@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useState, useRef, useEffect } from "react";
+import { Suspense, useState, useRef, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -152,6 +152,14 @@ function ConfigPreview({ config }: { config: EventConfig }) {
 }
 
 export default function AICreatePage() {
+  return (
+    <Suspense fallback={null}>
+      <AICreateContent />
+    </Suspense>
+  );
+}
+
+function AICreateContent() {
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([
     {
