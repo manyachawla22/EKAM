@@ -158,8 +158,6 @@ temp/
 # Certificates & reports
 *.pdf
 *.cert
-certificates/
-reports/
 
 # Keep example files
 !.env.example
