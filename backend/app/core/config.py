@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     EMAIL_FROM: str
 
     # ----- Frontend URL for magic links -----
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "https://ekam-kohl.vercel.app/"
 
     # ----- Captcha (public registration page, Task 6) -----
     # Cloudflare Turnstile secret. When empty, captcha verification is DISABLED
