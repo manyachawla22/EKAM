@@ -35,6 +35,58 @@ const rowBox: React.CSSProperties = {
   border: "1px solid #1e1e1e",
 };
 
+const iconBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid #222",
+  borderRadius: "0.3rem",
+  color: "rgba(255,255,255,0.6)",
+  cursor: "pointer",
+  fontSize: "0.7rem",
+  padding: "0.15rem 0.4rem",
+};
+
+// Minimal shapes for the editable event_deploy blueprint review (Stage 4).
+type BpCriterion = { name?: string; weight?: number; max_score?: number };
+type BpStage = {
+  id?: string; type?: string; label?: string; role?: string; artifact?: string;
+  behaviors?: string[];
+  scoring?: { method?: string; criteria?: BpCriterion[] } | null;
+  rule?: { kind?: string; n?: number | null; cutoff?: number | null; top_n?: number | null } | null;
+  window?: { opens_at?: string | null; closes_at?: string | null } | null;
+};
+type BpRole = { id?: string; kind?: string; label?: string; anonymous?: boolean };
+type BpArtifact = { id?: string; label?: string; kind?: string; required?: boolean };
+type BpRegField = { field_id?: string; label?: string; type?: string; required?: boolean; options?: string[] };
+
+const REG_FIELD_TYPES = ["text", "email", "tel", "number", "url", "select", "textarea", "date"];
+
+// One-line human summary of a stage's extracted config, so the review shows
+// EVERYTHING the agent captured (not just the label).
+function stageDetail(s: BpStage): string {
+  const bits: string[] = [];
+  if (s.role) bits.push(`role: ${s.role}`);
+  if (s.artifact) bits.push(`submits: ${s.artifact}`);
+  if (s.scoring?.criteria?.length) {
+    const crit = s.scoring.criteria
+      .map((c) => (c.weight ? `${c.name} (${c.weight}%)` : c.name))
+      .join(", ");
+    bits.push(`scoring [${s.scoring.method || "average"}]: ${crit}`);
+  }
+  if (s.rule?.kind) {
+    const r = s.rule;
+    const detail =
+      r.kind === "top_n" ? `top ${r.n ?? "?"}`
+      : r.kind === "cutoff_score" ? `cutoff ${r.cutoff ?? "?"}`
+      : r.kind === "winners" ? `top ${r.top_n ?? 3} winners`
+      : r.kind;
+    bits.push(`advance: ${detail}`);
+  }
+  if (s.behaviors?.length) bits.push(s.behaviors.join(", "));
+  if (s.window?.opens_at || s.window?.closes_at)
+    bits.push(`window: ${(s.window.opens_at || "?").slice(0, 16)} → ${(s.window.closes_at || "?").slice(0, 16)}`);
+  return bits.join("  ·  ");
+}
+
 export default function ApprovalEditor({ eventId, approval, teams, judges, participants, onSaved }: Props) {
   const [payload, setPayload] = useState<Record<string, unknown>>(approval.payload || {});
   const [saving, setSaving] = useState(false);
@@ -314,6 +366,226 @@ export default function ApprovalEditor({ eventId, approval, teams, judges, parti
           {stat("Panel avg", num("panel_average"))}
           {stat("Judge avg", num("judge_average"))}
         </div>
+      </div>
+    );
+  }
+
+  // ── event_deploy: Blueprint Review (editable) — reuses this approval's review
+  //    flow; edits persist to the deploy payload and the generator builds from the
+  //    EDITED blueprint when approved (§7 step 10, Stage 4). No new screen. ──
+  if (type === "event_deploy") {
+    const bp = (payload.blueprint as Record<string, unknown> | undefined) || {};
+    const validation =
+      (payload.blueprint_validation as {
+        confidence?: number;
+        ready?: boolean;
+        contradictions?: string[];
+        missing?: string[];
+      } | undefined) || {};
+    const stages = (bp.stages as BpStage[] | undefined) || [];
+    const roles = (bp.roles as BpRole[] | undefined) || [];
+    const setBp = (next: Record<string, unknown>) => setPayload((p) => ({ ...p, blueprint: next }));
+    const setStages = (next: BpStage[]) => setBp({ ...bp, stages: next });
+    const setRoles = (next: BpRole[]) => setBp({ ...bp, roles: next });
+    const moveStage = (i: number, dir: number) => {
+      const j = i + dir;
+      if (j < 0 || j >= stages.length) return;
+      const next = [...stages];
+      [next[i], next[j]] = [next[j], next[i]];
+      setStages(next);
+    };
+    // A round is "live-judged" when its evaluation has NO preceding submission
+    // stage (the generator keys live_judging off exactly this). The toggle adds /
+    // removes that submission stage so the blueprint stays the single source of truth.
+    const precedingSubIdx = (evalIdx: number): number => {
+      for (let k = evalIdx - 1; k >= 0; k--) {
+        if (stages[k].type === "evaluation") return -1;
+        if (stages[k].type === "submission") return k;
+      }
+      return -1;
+    };
+    const toggleLive = (evalIdx: number, live: boolean) => {
+      if (live) {
+        const si = precedingSubIdx(evalIdx);
+        if (si >= 0) setStages(stages.filter((_, idx) => idx !== si));
+      } else {
+        const sub: BpStage = {
+          id: `sub_${Date.now()}`, type: "submission",
+          label: `${stages[evalIdx].label || "Round"} Submission`, artifact: "submission",
+        };
+        const next = [...stages];
+        next.splice(evalIdx, 0, sub);
+        setStages(next);
+      }
+    };
+    // Registration form fields (KI-1): editable per-format public sign-up form.
+    const regFields = (bp.registration_fields as BpRegField[] | undefined) || [];
+    const setRegFields = (next: BpRegField[]) => setBp({ ...bp, registration_fields: next });
+    const conf = validation.confidence;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem", marginTop: "0.6rem" }}>
+        <p style={{ margin: 0, fontSize: "0.8rem", color: "rgba(255,255,255,0.7)" }}>
+          Review the AI&apos;s event blueprint. Edit anything below, then{" "}
+          <strong style={{ color: "#fff" }}>Save edits</strong>; approving builds the event from the
+          edited blueprint.
+        </p>
+        {conf != null && (
+          <div style={{ ...rowBox, gap: "0.75rem" }}>
+            <span style={{ fontSize: "0.78rem", color: "rgba(255,255,255,0.6)" }}>
+              Confidence{" "}
+              <strong style={{ color: conf >= 0.8 ? "#4ade80" : "#fbbf24" }}>
+                {Math.round(conf * 100)}%
+              </strong>
+            </span>
+            {validation.ready === false && (
+              <span style={{ fontSize: "0.72rem", color: "#fbbf24" }}>Needs attention before deploy</span>
+            )}
+          </div>
+        )}
+        {(validation.contradictions || []).length > 0 && (
+          <div style={{ fontSize: "0.74rem", color: "rgba(250,204,21,0.85)" }}>
+            ⚠ {(validation.contradictions || []).join("; ")}
+          </div>
+        )}
+        {(validation.missing || []).length > 0 && (
+          <div style={{ fontSize: "0.74rem", color: "rgba(255,255,255,0.5)" }}>
+            Still needed: {(validation.missing || []).join("; ")}
+          </div>
+        )}
+
+        {/* Format / participants / artifacts — the rest of what was extracted */}
+        {(() => {
+          const parts = (bp.participants as { model?: string; team_size?: { min?: number; max?: number } } | undefined) || {};
+          const arts = (bp.artifacts as BpArtifact[] | undefined) || [];
+          const fmt = (bp.format_label as string | undefined) || "";
+          return (
+            <div style={{ ...rowBox, flexDirection: "column", alignItems: "stretch", gap: "0.2rem" }}>
+              <span style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.7)" }}>
+                <strong style={{ color: "#fff" }}>{(bp.event_name as string) || "Event"}</strong>
+                {fmt ? `  ·  ${fmt}` : ""}  ·  {parts.model || "individual"}
+                {parts.model === "team" && parts.team_size
+                  ? ` (teams of ${parts.team_size.min}–${parts.team_size.max})` : ""}
+              </span>
+              {arts.length > 0 && (
+                <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.45)" }}>
+                  Artifacts: {arts.map((a) => `${a.label || a.id}${a.required ? "*" : ""}`).join(", ")}
+                </span>
+              )}
+            </div>
+          );
+        })()}
+
+        <strong style={{ fontSize: "0.78rem", color: "#fff", marginTop: "0.2rem" }}>Roles</strong>
+        {roles.map((r, i) => (
+          <div key={i} style={rowBox}>
+            <span style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)", width: "5rem" }}>
+              {r.kind || "judge"}{r.anonymous ? " 🕶" : ""}
+            </span>
+            <input
+              value={r.label || ""}
+              onChange={(e) => setRoles(roles.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))}
+              style={{ ...inputBase, flex: 1 }}
+            />
+          </div>
+        ))}
+
+        <strong style={{ fontSize: "0.78rem", color: "#fff", marginTop: "0.2rem" }}>Stages (in order)</strong>
+        {stages.map((s, i) => {
+          const detail = stageDetail(s);
+          return (
+            <div key={i} style={{ ...rowBox, flexDirection: "column", alignItems: "stretch", gap: "0.3rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.35)", width: "5.5rem" }}>{s.type}</span>
+                <input
+                  value={s.label || ""}
+                  onChange={(e) => setStages(stages.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))}
+                  style={{ ...inputBase, flex: 1 }}
+                />
+                <button onClick={() => moveStage(i, -1)} disabled={i === 0} style={iconBtn}>↑</button>
+                <button onClick={() => moveStage(i, 1)} disabled={i === stages.length - 1} style={iconBtn}>↓</button>
+                <button
+                  onClick={() => setStages(stages.filter((_, idx) => idx !== i))}
+                  style={{ ...iconBtn, color: "#f87171" }}
+                >
+                  ✕
+                </button>
+              </div>
+              {detail && (
+                <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.4)", paddingLeft: "6rem" }}>
+                  {detail}
+                </span>
+              )}
+              {s.type === "evaluation" && (
+                <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", paddingLeft: "6rem", fontSize: "0.72rem", color: "rgba(255,255,255,0.6)", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={precedingSubIdx(i) === -1}
+                    onChange={(e) => toggleLive(i, e.target.checked)}
+                  />
+                  Live judging — no upload; the referee/judge scores this round live
+                </label>
+              )}
+            </div>
+          );
+        })}
+
+        <strong style={{ fontSize: "0.78rem", color: "#fff", marginTop: "0.2rem" }}>
+          Public registration form
+        </strong>
+        <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.4)", marginTop: "-0.25rem" }}>
+          {bp.participants && (bp.participants as { model?: string }).model === "team"
+            ? "Collected per team member. "
+            : ""}
+          {regFields.length === 0
+            ? "Using a smart default form for this format. Add fields to customize."
+            : "Name + email are always included."}
+        </span>
+        {regFields.map((f, i) => (
+          <div key={i} style={{ ...rowBox, gap: "0.4rem" }}>
+            <input
+              value={f.label || ""}
+              placeholder="Field label"
+              onChange={(e) => setRegFields(regFields.map((x, idx) => (idx === i ? { ...x, label: e.target.value } : x)))}
+              style={{ ...inputBase, flex: 1 }}
+            />
+            <select
+              value={f.type || "text"}
+              onChange={(e) => setRegFields(regFields.map((x, idx) => (idx === i ? { ...x, type: e.target.value } : x)))}
+              style={{ ...inputBase, flex: "none", width: "6rem" }}
+            >
+              {REG_FIELD_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.7rem", color: "rgba(255,255,255,0.6)" }}>
+              <input
+                type="checkbox"
+                checked={!!f.required}
+                onChange={(e) => setRegFields(regFields.map((x, idx) => (idx === i ? { ...x, required: e.target.checked } : x)))}
+              />
+              req
+            </label>
+            <button onClick={() => setRegFields(regFields.filter((_, idx) => idx !== i))} style={{ ...iconBtn, color: "#f87171" }}>✕</button>
+          </div>
+        ))}
+        <button
+          onClick={() => setRegFields([
+            ...(regFields.length ? regFields : [
+              { field_id: "full_name", label: "Full Name", type: "text", required: true },
+              { field_id: "email", label: "Email", type: "email", required: true },
+            ]),
+            { field_id: `field_${regFields.length + 1}`, label: "", type: "text", required: false },
+          ])}
+          style={{ ...iconBtn, alignSelf: "flex-start", color: "#e8503a", fontSize: "0.72rem", fontWeight: 700 }}
+        >
+          + Add field
+        </button>
+
+        <SaveBar saving={saving} onSave={() => save(payload)} />
+        <details style={{ marginTop: "0.3rem" }}>
+          <summary style={{ fontSize: "0.72rem", color: "rgba(255,255,255,0.4)", cursor: "pointer" }}>
+            Advanced: raw blueprint JSON
+          </summary>
+          <JsonEditor value={bp} saving={saving} onSave={(v) => save({ ...payload, blueprint: v })} />
+        </details>
       </div>
     );
   }

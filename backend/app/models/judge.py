@@ -45,6 +45,11 @@ class Judge(Base):
 
     expertise = Column(ARRAY(String), default=[])
 
+    # Task 3 (Event OS): the blueprint role this judge fills (Reviewer / Investor /
+    # Jury / Mentor / Adjudicator…). Pure label — same Judge account + permissions;
+    # the judging/leaderboard UI displays it. Defaults to "Judge" (legacy behaviour).
+    role_label = Column(String, nullable=True, default="Judge")
+
     rating = Column(Float, default=5.0)
 
     # OTP Auth Fields

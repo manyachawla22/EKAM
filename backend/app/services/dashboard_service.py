@@ -295,6 +295,16 @@ async def judge_dashboard_service(
         for s in subs_res.scalars().all():
             submissions[(s.team_id, s.round_id)] = s
 
+    # Blind review (Task 3, 5b): in an anonymous round, the reviewer must not see
+    # who authored a submission. Show a stable "Submission #…" label instead of the
+    # real team name. Keyed on submission id (unique per round) so the judge can
+    # still refer to it consistently; falls back to the team id pre-submission.
+    def _display_name(team, submission, rnd) -> str:
+        if getattr(rnd, "anonymous", False):
+            base = submission.id if submission else team.id
+            return f"Submission #{str(base)[:6].upper()}"
+        return team.name
+
     for rnd in rounds:
         for team_id in panel_team_ids:
             team = teams.get(team_id)
@@ -302,10 +312,11 @@ async def judge_dashboard_service(
                 continue
 
             submission = submissions.get((team_id, rnd.id))
+            display_name = _display_name(team, submission, rnd)
 
             assigned_teams.append({
                 "team_id": str(team.id),
-                "team_name": team.name,
+                "team_name": display_name,
                 "round_id": str(rnd.id),
                 "round_name": rnd.name,
                 "theme_id": str(team.theme_id) if team.theme_id else None,
@@ -324,7 +335,7 @@ async def judge_dashboard_service(
                 if eval_record:
                     completed_evaluations.append({
                         "submission_id": str(submission.id),
-                        "team_name": team.name,
+                        "team_name": display_name,
                         "round_name": rnd.name,
                         "score": eval_record.total_score,  # Evaluation uses total_score
                         "evaluated_at": eval_record.evaluated_at,
@@ -332,7 +343,7 @@ async def judge_dashboard_service(
                 else:
                     pending_evaluations.append({
                         "submission_id": str(submission.id),
-                        "team_name": team.name,
+                        "team_name": display_name,
                         "round_name": rnd.name,
                         "team_id": str(team.id),
                     })

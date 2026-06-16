@@ -421,6 +421,33 @@ export default function ParticipantsPage() {
               )}
             </div>
 
+            {/* Registration details (tailored form answers) */}
+            {(() => {
+              const data = detailModal.participant.registration_data;
+              if (!data || typeof data !== "object") return null;
+              const SKIP = new Set(["full_name", "name", "email"]);
+              const entries = Object.entries(data).filter(
+                ([k, v]) => !SKIP.has(k.toLowerCase()) && v !== null && v !== undefined && v !== "",
+              );
+              if (entries.length === 0) return null;
+              const fmtKey = (k: string) =>
+                k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+              const fmtVal = (v: unknown) => (Array.isArray(v) ? v.join(", ") : String(v));
+              return (
+                <div>
+                  <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.5rem" }}>Registration Details</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "0.4rem 1rem", padding: "0.75rem 1rem", borderRadius: "0.5rem", background: "#0d0d0d" }}>
+                    {entries.map(([k, v]) => (
+                      <div key={k} style={{ display: "contents" }}>
+                        <span style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.4)" }}>{fmtKey(k)}</span>
+                        <span style={{ fontSize: "0.8rem", color: "#fff", wordBreak: "break-word" }}>{fmtVal(v)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Team */}
             <div>
               <p style={{ fontSize: "0.75rem", fontWeight: 700, color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: "0.5rem" }}>Team</p>

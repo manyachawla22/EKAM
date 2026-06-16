@@ -19,10 +19,11 @@ import {
   ShieldCheck,
   AlertTriangle,
   Award,
+  GitBranch,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useEventStream } from "@/lib/useEventStream";
-import { listPendingApprovals, listAnomalies } from "@/lib/api";
+import { listPendingApprovals, listAnomalies, getEventFeatures, type EventFeatures } from "@/lib/api";
 
 interface NavItem {
   label: string;
@@ -47,6 +48,7 @@ function getNavItems(role: string | null, eventId?: string, profile?: { event_id
         { label: "Judges", href: `/organizer/events/${eventId}/judges`, icon: <UserCheck size={16} /> },
         { label: "Submissions", href: `/organizer/events/${eventId}/submissions`, icon: <Send size={16} /> },
         { label: "Leaderboard", href: `/organizer/events/${eventId}/leaderboard`, icon: <Award size={16} /> },
+        { label: "Bracket", href: `/organizer/events/${eventId}/bracket`, icon: <GitBranch size={16} /> },
         { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} />, glowKey: "approvals" },
         { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} />, glowKey: "anomalies" },
         { label: "Reports", href: `/organizer/events/${eventId}/reports`, icon: <BarChart2 size={16} /> }
@@ -92,7 +94,22 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
   const [open, setOpen] = useState(true);
   const [pendingApprovals, setPendingApprovals] = useState(0);
   const [unresolvedAnomalies, setUnresolvedAnomalies] = useState(0);
+  const [features, setFeatures] = useState<EventFeatures | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Per-event feature flags drive which event tabs show (e.g. Bracket only for
+  // tournaments). Fetched once per event; cleared when not inside an event.
+  useEffect(() => {
+    if (!eventId || (role !== "organizer" && role !== "admin")) {
+      setFeatures(null);
+      return;
+    }
+    let cancelled = false;
+    getEventFeatures(eventId)
+      .then((f) => { if (!cancelled) setFeatures(f); })
+      .catch(() => { if (!cancelled) setFeatures(null); });
+    return () => { cancelled = true; };
+  }, [eventId, role]);
 
   useEffect(() => {
     const stored = typeof window !== "undefined" ? localStorage.getItem("ekam:sidebar") : null;
@@ -153,7 +170,18 @@ export default function Sidebar({ eventId: eventIdProp }: SidebarProps = {}) {
     };
   }, [eventId, refreshCounts]);
 
-  const navItems = getNavItems(role, eventId, profile ?? undefined);
+  let navItems = getNavItems(role, eventId, profile ?? undefined);
+  // Feature-flag the event tabs. Bracket: shown only when the event has a bracket
+  // (hidden until features load, so a non-tournament never flashes it). Teams:
+  // shown for team events; hidden only once we KNOW it's an individual event (so a
+  // core tab doesn't flash away while features load).
+  if (eventId) {
+    navItems = navItems.filter((it) => {
+      if (it.label === "Bracket") return !!features?.has_bracket;
+      if (it.label === "Teams") return features ? features.has_teams : true;
+      return true;
+    });
+  }
   if (navItems.length === 0) return null;
 
   const isActive = (item: NavItem) =>

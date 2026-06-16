@@ -14,7 +14,9 @@ from fastapi import (
     HTTPException,
 )
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -133,3 +135,34 @@ async def list_submissions(
 ):
     """List all submissions for a round."""
     return await list_submissions_service(db, round_id)
+
+
+class AutoScoreBody(BaseModel):
+    # map of submission_id OR team_id (string) → numeric score
+    scores: dict[str, float]
+
+
+@router.post(
+    "/{round_id}/auto-score",
+    dependencies=[Depends(require_actor_type(["organizer"]))],
+)
+async def auto_score_round(
+    round_id: UUID,
+    body: AutoScoreBody,
+    auth: AuthContext = Depends(require_actor_type(["organizer"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ingest externally-computed scores for an AUTO-scored round (autograder /
+    CTF scoreboard / AI metric). Sets submission.final_score, updates the live
+    leaderboard, and auto-proposes advancement (the organizer still approves).
+    Organizer-only; must own the round's event."""
+    from app.models.event import Round as RoundModel
+    from app.services.auto_score_service import apply_auto_scores
+
+    rnd = (await db.execute(select(RoundModel).where(RoundModel.id == round_id))).scalars().first()
+    if rnd is None:
+        raise HTTPException(status_code=404, detail="Round not found")
+    if not auth.can_access_event(str(rnd.event_id)):
+        raise HTTPException(status_code=403, detail="No access to this event")
+
+    return await apply_auto_scores(db, str(round_id), body.scores)

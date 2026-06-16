@@ -1,477 +1,169 @@
-# 🚀 EKAM — AI-Powered Event Orchestration Platform
+# 🚀 EKAM — AI Event Operating System
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-336791)
-![AI](https://img.shields.io/badge/AI-Groq%20LLM-purple)
+![AI](https://img.shields.io/badge/AI-Gemini%20%2B%20Groq-purple)
 ![ML](https://img.shields.io/badge/ML-scikit--learn-orange)
 ![Optimization](https://img.shields.io/badge/Optimization-OR--Tools%20CP--SAT-red)
-![Frontend](https://img.shields.io/badge/Frontend-Next.js-black)
+![Frontend](https://img.shields.io/badge/Frontend-Next.js%2015%20%2F%20React%2019-black)
 
 ---
 
 ## ✨ Overview
 
-**EKAM** is an AI-powered event management and hackathon orchestration platform designed to automate and optimize the full lifecycle of competitions.
+**EKAM** is an **AI-driven event operating system**. An organizer *describes* a
+competition in plain English; EKAM turns that into a structured **Universal Blueprint**,
+asks for what's missing, and — after the organizer approves — **builds and runs the
+whole event end-to-end**.
 
-Instead of treating event management as a collection of forms and dashboards, EKAM approaches it as an **intelligent workflow problem**:
+The key idea: EKAM is **format-agnostic**. The same engine runs a hackathon, an
+ideathon, a case competition, a coding contest / CTF, a quiz, a knockout tournament
+(esports / chess / sports), or a research symposium — because the AI maps every event
+onto a small set of building blocks ("primitives") instead of needing custom code per
+format. Unknown formats (debate, MUN, scholarship…) are mapped onto the same primitives
+and still run end-to-end.
 
-- Organizers describe events in **natural language**
-- The platform converts that into a **structured event configuration**
-- Teams and judges are assigned using **constraint-based optimization**
-- Submissions and evaluations move through a **stage-aware pipeline**
-- ML models validate scoring integrity and content similarity
-- Reports, certificates, and notifications are generated automatically
+### The mental model (three rules that explain everything)
 
-The result is a platform that is not just operational, but **decision-supportive**.
+1. **The AI proposes. Python guarantees. The human approves.** Nothing irreversible
+   (deploy, team formation, judge panels, emails, winners, anomaly reveal) happens
+   without an organizer clicking approve.
+2. **The blueprint is the source of truth.** Which stages exist and which per-round
+   flags are on (auto-scoring / anonymous / live / quiz) all come from the approved
+   blueprint stored on the event.
+3. **The pipeline is a loop.** Figure out the current step → check its real-world
+   condition → propose an approval → on approval, run the effect and advance. Same loop
+   for every format.
 
 ---
 
-## 🧠 Why EKAM is Different
+## 🧠 Why EKAM is different
 
-Most event platforms stop at registration, dashboards, and basic CRUD workflows. EKAM goes further by integrating:
+Most event platforms stop at registration, dashboards, and CRUD. EKAM is an
+**orchestration engine**:
 
-- **AI for event design and automation**
-- **Optimization for team and judge assignment**
-- **ML for validation and anomaly detection**
-- **LLM-generated reports and certificates**
-- **Stage-aware orchestration for real multi-round events**
-
-This makes EKAM a strong example of **applied AI, backend systems, and optimization engineering** in one project.
+- **AI for event *design*** — not just form-filling, but inferring the full pipeline
+  (stages, roles, scoring, progression) from a description, with a deterministic safety
+  net so a sloppy or absent LLM still yields a runnable event.
+- **Optimization (CP-SAT)** for team formation and judge assignment.
+- **ML** for scoring-anomaly detection and plagiarism/similarity.
+- **A resilient LLM layer** — Gemini (key-pool rotation) with automatic Groq fallback.
+- **Human-in-the-loop approvals** on everything irreversible.
 
 ---
 
 ## 🔥 Core Features
 
-### 🤖 AI Event Creation
-EKAM includes a chatbot that accepts natural language prompts from organizers and converts them into a structured event configuration.
+### 🤖 AI Event Creation (Event OS)
+- **Describe → blueprint → review → deploy.** A chat agent extracts the event onto the
+  Universal Blueprint, asks only for what's genuinely required, and shows a live,
+  editable preview.
+- **Understands intent, not keywords** — "written aptitude test" → quiz; "1v1 knockout"
+  → bracket; "double-blind" → anonymous review; "pitch live" → a live-judged round.
+- **Always asks for evaluators** (judges / referees / reviewers) and event-specific data
+  (a quiz's question bank, a tournament's match links).
+- **Robust by construction** — deterministic normalization + validation fill ids,
+  defaults, and clamps, so the event is runnable even if the model is imperfect.
 
-It can extract and organize:
-- event theme and type
-- timeline and registration flow
-- participant and team settings
-- round structure
-- judging setup
-- prize information
-- team formation constraints
+### 🧩 7 built-in event types (+ anything else)
+Hackathon · Ideathon · Case competition · Coding contest / CTF · Quiz / written test ·
+Tournament / knockout · Symposium / paper review. Each has a canonical flow and tailored
+registration fields; unknown formats are decomposed onto the same primitives.
 
-The chatbot is designed with schema-guided extraction and backend-side validation so that the generated configuration remains aligned with the rest of the system.
+### 🏆 Tournament brackets
+Single-elimination knockouts: generate the tree (eliminated teams excluded, byes
+rendered), referees score matches and winners auto-advance up the tree (live via SSE),
+match links bulk-uploaded via CSV. Works for team *and* individual events.
 
----
+### 📝 Quiz / question-bank engine
+Upload a `.md`/`.csv` question bank; the platform generates a different paper per team;
+participants upload one answer file; judges grade per-question **or** the AI auto-checks
+against the answer key.
 
-### 🧑‍🤝‍🧑 Constraint-Based Team Formation
-EKAM uses **Google OR-Tools CP-SAT** to form teams under real constraints such as:
-- gender diversity
-- institutional diversity
-- skill distribution
-- experience balancing
+### 🧑‍🤝‍🧑 Constraint-based team formation (CP-SAT)
+Form balanced teams from individual sign-ups (skills, diversity, size). Supports
+**preformed** teams (a leader registers the whole team) and **platform-formed** teams.
 
-This moves team formation from a manual or random process to a formal optimization problem.
+### 🧑‍⚖️ Constraint-based judge assignment (CP-SAT)
+Assign judges to teams/rounds with adaptive panel sizes; idempotent and re-approval safe.
 
----
+### 🧪 Integrity: anomalies + plagiarism
+Isolation-Forest scoring-anomaly detection (variance / bias / timing), organizer-gated
+before the judge ever sees it; TF-IDF plagiarism/similarity across PDFs, code, and repos.
 
-### 🧑‍⚖️ Constraint-Based Judge Assignment
-Judges are assigned using optimization-aware logic based on:
-- theme relevance
-- expertise mapping
-- workload balancing
-- fairness constraints
+### 🌐 Public registration page
+A shareable public sign-up page at `/register/<hash>` with a **per-format dynamic form**
+(fields auto-chosen for the event — e.g. esports → in-game name, symposium → paper
+title), Cloudflare-Turnstile bot protection, and hard gates on the registration window,
+capacity, and per-event email uniqueness. Team events collect each member's details on
+one form (first two required, the rest optional up to the max).
 
-This helps make the evaluation process more scalable and reliable.
+### 📄 Resume parsing & ATS
+Participants can upload a resume PDF; EKAM extracts the text and uses the LLM seam (with
+a regex name backstop for when the model is rate-limited) to pull structured details and
+compute an **ATS-style score** used in skill-aware team formation.
 
----
+### 📡 Real-time updates (Server-Sent Events)
+A long-lived `GET /stream` SSE connection pushes "something changed" signals
+(notifications, approvals, anomalies, pipeline/bracket changes) to the authenticated
+user, so dashboards refresh instantly instead of waiting for a poll. Bracket match
+scores propagate live this way. (The frontend uses a shared-SSE singleton; the backend
+deliberately avoids pinning a DB connection to each open stream.)
 
-### 🧪 ML-Based Anomaly Detection
-EKAM uses **Isolation Forest** to detect abnormal judging patterns and suspicious scoring behavior such as:
-- unusually lenient or harsh judges
-- inconsistent scores
-- outlier scoring patterns
+### 📊 Reports, certificates & comms
+Event/participant/anomaly/plagiarism reports (LLM-personalized where useful),
+LLM-generated certificates, and approval-gated email + in-app notifications at every
+touchpoint.
 
-These anomalies are surfaced to organizers through reports for review.
-
----
-
-### 🕵️ Plagiarism Detection
-The platform supports plagiarism and similarity detection across:
-- PDFs
-- local text/code files
-- GitHub repositories
-
-It extracts readable content and flags submissions whose similarity exceeds a defined threshold.
-
----
-
-### 📊 Reports System
-EKAM generates:
-- event summary reports
-- participant performance reports
-- anomaly reports
-- plagiarism reports
-
-Participant performance reports are generated using an LLM call to provide personalized insights based on performance across rounds.
-
----
-
-### 📜 Certificate Generation and Communication
-EKAM supports:
-- LLM-generated certificates
-- fallback HTML certificate templates
-- stage-wise email communication
-- authentication and onboarding emails
-- notifications for reports, progression, and outcomes
+### 🔄 Dynamic, approval-gated pipeline
+A per-event pipeline derived from the blueprint walks the event through registration →
+formation → judge assignment → rounds (submission/evaluation/advancement, or a bracket)
+→ winners — pausing at each irreversible step for organizer approval.
 
 ---
 
-### 📂 CSV Uploads
-The platform supports structured CSV onboarding for:
-- participants
-- judges
-
-This makes large-scale event setup far easier for organizers.
-
----
-
-### 🏗️ Full Event Lifecycle Management
-EKAM supports:
-- authentication and RBAC
-- event orchestration
-- approvals
-- multi-round event progression
-- submissions
-- evaluations
-- leaderboards
-- communications
-- organizer, judge, participant, and admin flows
-
----
-
-## 🏗️ High-Level Architecture
+## 🏗️ Architecture
 
 ```text
-                         ┌─────────────────────────────┐
-                         │         Frontend            │
-                         │         Next.js             │
-                         │ Organizer / Judge / User UI │
-                         └──────────────┬──────────────┘
-                                        │
-                                        │ HTTP / JSON
-                                        ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│                               FastAPI Backend                              │
-│                                                                            │
-│  ┌─────────────────────┐   ┌─────────────────────┐   ┌──────────────────┐  │
-│  │     AI Router       │   │   Core Routers      │   │   Report Router  │  │
-│  │ /chat /deploy etc   │   │ events / teams /    │   │ anomalies /      │  │
-│  │                     │   │ submissions / eval   │   │ plagiarism / LLM │  │
-│  └─────────┬───────────┘   └──────────┬──────────┘   └─────────┬────────┘  │
-│            │                          │                          │           │
-│            ▼                          ▼                          ▼           │
-│  ┌──────────────────┐      ┌────────────────────┐      ┌─────────────────┐  │
-│  │  AI Config Layer │      │  Service Layer     │      │   ML / LLM      │  │
-│  │ JSON draft/store │      │ modular business   │      │ anomaly, plag,  │  │
-│  │ + schema cleanup │      │ logic              │      │ reports, certs  │  │
-│  └─────────┬────────┘      └─────────┬──────────┘      └────────┬────────┘  │
-│            │                         │                            │           │
-│            ├──────────────┐          │                            │           │
-│            ▼              ▼          ▼                            ▼           │
-│      JSON Configs     PostgreSQL   OR-Tools CP-SAT         Groq / sklearn    │
-│      (AI drafts)      (core data)  (team/judge assign)     (LLM / ML)        │
-└────────────────────────────────────────────────────────────────────────────┘
+                    Browser: Organizer · Participant · Judge
+                                     │  HTTPS / SSE
+                                     ▼
+        ┌─────────────────────────────────────────────────────────┐
+        │  FRONTEND — Next.js 15 / React 19 / TypeScript / Tailwind │
+        │  organizer/* · participant/* · judge/* · /register/<hash> │
+        └───────────────────────────┬─────────────────────────────┘
+                                     │ REST + SSE
+                                     ▼
+        ┌─────────────────────────────────────────────────────────┐
+        │  BACKEND — FastAPI (async)                                │
+        │  routers/ → services/ → models/ (SQLAlchemy)              │
+        │  Event OS (blueprint · validator · generator · pipeline)  │
+        │  llm_client seam · CP-SAT · ML · approvals · event_bus    │
+        └───────┬───────────────────┬───────────────────┬──────────┘
+                ▼                   ▼                   ▼
+        Gemini 2.5 (key pool)   PostgreSQL          Resend (email)
+          → Groq fallback     (JSONB blueprints)   Firebase (org auth)
+                                                   Local/ngrok file store
 ```
 
----
-
-## ⚙️ System Design
-
-### Backend Stack
-- **FastAPI** for async API services
-- **Async SQLAlchemy** for ORM and database access
-- **PostgreSQL** for structured data storage
-- **JSON config storage** for AI-generated draft and event configuration
-
-### AI and ML Stack
-- **Groq** for:
-  - natural language event creation
-  - participant performance reports
-  - report/certificate content generation
-
-- **scikit-learn** for:
-  - Isolation Forest anomaly detection
-  - TF-IDF based plagiarism and similarity detection
-
-### Optimization Stack
-- **Google OR-Tools CP-SAT** for:
-  - team formation
-  - judge assignment
-
-### Frontend
-- **Next.js** based frontend with organizer, judge, participant, and admin-facing flows
+A full set of ASCII diagrams (ER, DFDs, user flows, orchestration loop, deploy
+sequence) lives in [`.vscode/study/current_diagrams.md`](.vscode/study/current_diagrams.md).
 
 ---
 
-## 🧩 End-to-End Feature Set
+## ⚙️ Tech Stack
 
-EKAM includes end-to-end backend architecture and system integration for:
-
-- Authentication
-- RBAC
-- Database design
-- Event orchestration
-- CSV upload
-- Approvals
-- Submissions
-- Evaluations
-- Leaderboards
-- Communications
-- Multi-round event management
-- Dynamic event progression pipeline
-- ML-based anomaly detection
-- CP-SAT based team assignment
-- CP-SAT based judge assignment
-- AI-powered event creation chatbot
-- Plagiarism detection
-- LLM-generated participant reports
-- Certificate generation and email delivery
-
----
-
-## 🤖 How the AI Chatbot Works
-
-The chatbot is designed to convert free-form organizer instructions into structured event definitions while staying compatible with the backend.
-
-### Flow
-1. Organizer describes the event in natural language
-2. The AI layer extracts structured fields such as:
-   - event type
-   - rounds
-   - constraints
-   - judges
-   - prizes
-   - timeline
-3. Backend validation and cleanup ensure the configuration remains usable
-4. The config is stored as a draft/event JSON representation
-5. Deployment finalizes the event into the EKAM workflow
-
-### Why this matters
-This makes event creation significantly faster and lowers the barrier for organizers, while still preserving backend structure and control.
-
-### Example
-A prompt like:
-
-> Create a 3-round AI hackathon for 50 teams of 4, with gender-diverse teams, one screening round and one final demo round.
-
-can be turned into a structured config containing:
-- team size
-- capacity
-- rounds
-- team-matching constraints
-- event type and theme metadata
-
----
-
-## 🧑‍🤝‍🧑 How Team Formation Works
-
-Team formation is modeled as an optimization problem.
-
-### Inputs
-- participant data
-- AI-derived or organizer-defined constraints
-- team size bounds
-- diversity requirements
-- institution and skill preferences
-
-### Solver
-EKAM uses **Google OR-Tools CP-SAT** to solve the team assignment problem.
-
-### Goals
-- satisfy hard constraints
-- maximize team quality and fairness
-- avoid naive/manual grouping
-
-### Example constraints
-- avoid too many members from the same institute
-- ensure skill coverage within a team
-- balance experience levels
-- include diversity-aware allocation
-
-This is one of the strongest technical components of EKAM because it moves team formation from heuristics to formal optimization.
-
----
-
-## 🧑‍⚖️ How Judge Assignment Works
-
-Judge assignment follows a similar principle:
-- judges are matched to submissions, teams, or rounds
-- expertise and theme relevance are considered
-- assignment load is balanced
-- conflicts are reduced where possible
-
-This makes the evaluation process more fair, scalable, and explainable.
-
----
-
-## 🧪 ML Components
-
-### 1. Anomaly Detection in Judging
-EKAM uses **Isolation Forest** to identify suspicious scoring behavior such as:
-- abnormally lenient or harsh judges
-- inconsistent scoring patterns
-- outlier score distributions
-
-These anomalies are surfaced through reports for organizer review.
-
-### 2. Plagiarism Detection
-EKAM compares submission content across:
-- PDFs
-- code/text files
-- GitHub repositories
-
-The pipeline:
-1. extracts readable content
-2. vectorizes it using TF-IDF
-3. computes similarity
-4. flags suspiciously similar submissions
-
-This helps preserve evaluation integrity in both coding and idea-based events.
-
----
-
-## 📊 Reports System
-
-The reports system includes:
-- event summary reports
-- participant performance reports
-- anomaly reports
-- plagiarism reports
-
-### Participant Performance Reports
-These are generated using an LLM call to produce personalized performance summaries for each participant or team based on their competition journey and outcomes.
-
-### Event Reports
-Organizers can generate richer event-level summaries for operational review and post-event analysis.
-
----
-
-## 📜 Certificate Generation
-
-EKAM can:
-- generate certificates using LLM-generated HTML
-- fall back to static HTML templates if needed
-- send certificates via email automatically
-
-This is integrated into the platform workflow rather than treated as a disconnected feature.
-
----
-
-## 🖥️ Frontend Experience
-
-The frontend includes:
-
-### Public and Landing
-- landing page
-- login
-- sign up
-
-### Organizer Dashboard
-- overview
-- rounds
-- participants and judges
-- teams
-- submissions
-- leaderboard
-- approvals
-- anomalies
-- reports
-
-### Judge Dashboard
-- assignments
-- evaluation flows
-- score submission
-
-### Participant Dashboard
-- team view
-- event progress
-- submissions
-- results
-- reports
-
-### Admin Pages
-- overview
-- event control and monitoring
-
----
-
-## 🔌 API Overview
-
-### AI
-```text
-POST /ai/chat
-POST /ai/deploy
-GET  /ai/events
-GET  /ai/events/{hash}
-GET  /ai/events/{event_id}/detail
-```
-
-### Authentication
-```text
-POST /auth/signup
-POST /auth/login
-POST /auth/otp
-POST /auth/magic-link
-```
-
-### Events and Rounds
-```text
-POST /events/create
-GET  /events/{event_id}
-GET  /events
-POST /rounds/create
-GET  /rounds/{event_id}
-```
-
-### Participants and Judges
-```text
-GET  /participants/{event_id}
-POST /participants/{event_id}
-POST /events/{event_id}/participants/upload-csv
-
-GET  /judges/{event_id}
-POST /judges/{event_id}
-POST /events/{event_id}/judges/upload-csv
-```
-
-### Teams
-```text
-POST /teams/{event_id}/auto-form
-GET  /teams/{event_id}
-POST /teams/create
-```
-
-### Submissions and Evaluations
-```text
-POST /submissions/...
-GET  /submissions/...
-POST /evaluations/...
-GET  /evaluations/...
-```
-
-### Reports and ML
-```text
-POST /reports/detect-anomalies/{event_id}
-POST /reports/detect-plagiarism/{event_id}
-POST /reports/{event_id}/generate
-GET  /reports/{event_id}
-GET  /reports/participant/{event_id}/{participant_id}
-```
-
-### Pipeline, Leaderboard, Approvals
-```text
-GET  /leaderboard/{event_id}
-POST /pipeline/...
-GET  /approvals/{event_id}
-POST /approvals/{approval_id}/approve
-POST /approvals/{approval_id}/reject
-```
+**Backend** — FastAPI · async SQLAlchemy · PostgreSQL · Alembic (migrations) ·
+Pydantic v2.
+**AI** — Gemini 2.5 Flash (primary) with a multi-key pool, automatic **Groq** fallback,
+optional Anthropic — all behind one `llm_client` seam.
+**Optimization** — Google OR-Tools **CP-SAT** (team formation, judge assignment).
+**ML** — scikit-learn (Isolation Forest anomalies; TF-IDF plagiarism).
+**Email** — Resend. **Auth** — Firebase (organizers) + JWT/OTP/magic-link
+(participants & judges). **Files** — local storage, served via ngrok for remote judges.
+**Frontend** — Next.js 15, React 19, TypeScript, Tailwind v4, Firebase, framer-motion,
+recharts, sonner. Live updates via **SSE**.
 
 ---
 
@@ -481,19 +173,28 @@ POST /approvals/{approval_id}/reject
 EKAM/
 ├── backend/
 │   ├── app/
-│   │   ├── core/              # config, auth context, security, utils
-│   │   ├── middleware/        # RBAC/auth middleware
-│   │   ├── models/            # SQLAlchemy models
-│   │   ├── schemas/           # Pydantic schemas
-│   │   ├── routers/           # FastAPI route modules
-│   │   ├── services/          # business logic/services
-│   │   ├── team_formation/    # CP-SAT optimization logic
-│   │   └── main.py            # app entrypoint
-│   ├── alembic/               # migrations
+│   │   ├── core/         # config, database, auth context
+│   │   ├── middleware/   # auth / RBAC
+│   │   ├── models/       # SQLAlchemy tables (events, rounds, teams, submissions,
+│   │   │                 #   judges, matches, quiz, approvals, pipeline, …)
+│   │   ├── schemas/      # Pydantic request/response shapes
+│   │   ├── routers/      # FastAPI endpoints (one per domain + ai, matches, quiz, stream)
+│   │   ├── services/     # logic: Event OS (blueprint/validator/generator/pipeline),
+│   │   │                 #   llm_client, CP-SAT, scoring, bracket, quiz, ML, comms…
+│   │   └── main.py       # app entrypoint (+ a 60s deadline-sweep scheduler)
+│   ├── alembic/          # migrations
+│   ├── scripts/
+│   │   └── eval_blueprints.py   # AI regression harness (10 event descriptions)
 │   └── requirements.txt
-├── frontend_new/              # Next.js frontend
+├── frontend_new/         # Next.js app (THE active frontend)
+├── .vscode/study/        # study docs: current_database / backend_map / ai_system /
+│                         #   features / challenges_learnings / diagrams
+├── expectation.md        # full behavior runbook (states + edge cases)
+├── ai_expect.md          # per-event-type end-to-end expectations
 └── README.md
 ```
+
+> **Note:** the active frontend is **`frontend_new/`**.
 
 ---
 
@@ -502,178 +203,213 @@ EKAM/
 ### Prerequisites
 - Python 3.10+
 - PostgreSQL
-- Node.js
-- Groq API key
-- SMTP credentials for email features
+- Node.js 18+
+- A **Gemini** API key (free tier works) — and/or a **Groq** key (fallback)
+- A **Resend** API key (for email)
+- A **Firebase** service-account JSON (organizer auth)
 
-### Backend Setup
+### Backend
 
-#### 1. Clone the repository
 ```bash
 git clone <your-repo-url>
 cd EKAM
-```
 
-#### 2. Create a virtual environment
-```bash
 python -m venv venv
-source venv/bin/activate
-```
-
-On Windows:
-```bash
+# Windows:
 venv\Scripts\activate
-```
+# macOS/Linux:
+source venv/bin/activate
 
-#### 3. Install backend dependencies
-```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-#### 4. Configure environment variables
-Create a `.env` file inside the backend directory.
+Create `backend/.env` (see the full template below), then:
 
-Example:
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/ekam
-GROQ_API_KEY=your_groq_api_key
-
-SMTP_SERVER=smtp.example.com
-SMTP_PORT=587
-SMTP_USERNAME=your_email_user
-SMTP_PASSWORD=your_email_password
-SENDER_EMAIL=your_email@example.com
-SENDER_NAME=EKAM
-
-FRONTEND_URL=http://localhost:3000
-```
-
-#### 5. Run migrations
 ```bash
-alembic upgrade head
+alembic upgrade head          # apply migrations
+uvicorn app.main:app --reload # start the API
 ```
 
-#### 6. Start the backend
-```bash
-uvicorn app.main:app --reload
-```
+- API: `http://127.0.0.1:8000`
+- Docs (Swagger): `http://127.0.0.1:8000/docs` (routes are under the `API_V1_STR` prefix)
 
-Backend should now be available at:
-```text
-http://127.0.0.1:8000
-```
-
-#### 7. Open API docs
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## 🌐 Frontend Setup
+### Frontend
 
 ```bash
 cd frontend_new
 npm install
-npm run dev
-```
-
-Frontend should be available at:
-```text
-http://localhost:3000
+npm run dev          # http://localhost:3000
 ```
 
 ---
 
-## 🔐 Environment Variables
+## 🔐 Environment Variables (`backend/.env`)
 
-Typical environment variables used by EKAM include:
+EKAM loads settings via `pydantic-settings`, so the variables **without defaults are
+required** — the app won't start if they're missing.
 
 ```env
-DATABASE_URL=
-GROQ_API_KEY=
-SMTP_SERVER=
-SMTP_PORT=
-SMTP_USERNAME=
-SMTP_PASSWORD=
-SENDER_EMAIL=
-SENDER_NAME=
-FRONTEND_URL=
-```
+# ----- App -----
+PROJECT_NAME=EKAM
+VERSION=1.0.0
+API_V1_STR=/api/v1
+DEBUG=true
 
-Depending on deployment, you may also configure:
-- storage credentials
-- JWT/auth secrets
-- analytics keys
-- deployment-specific service URLs
+# ----- Database (PostgreSQL) -----
+POSTGRES_SERVER=localhost
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=ekam
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/ekam
+
+# ----- Auth -----
+FIREBASE_CREDENTIALS_PATH=./firebase-service-account.json
+MOCK_AUTH=false
+JWT_SECRET_KEY=change-me
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+# ----- AI / LLM seam -----
+# Primary provider for the Event-OS agent. "gemini" (default) | "groq" | "anthropic".
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-2.5-flash
+GEMINI_API_KEY=your_gemini_key
+# OPTIONAL key pool to beat the free-tier 20 req/day limit. Comma-separated, and the
+# keys MUST come from SEPARATE Google Cloud projects (same-project keys share a quota).
+GEMINI_API_KEYS=key1,key2,key3
+# Groq is the automatic fallback (and powers resume parsing etc.). Keep the model current.
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=llama-3.3-70b-versatile
+ANTHROPIC_API_KEY=
+
+# ----- Email (Resend) -----
+# NOTE: email is sent via Resend; the Resend API key is read from SMTP_PASSWORD.
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=587
+SMTP_USER=resend
+SMTP_PASSWORD=your_resend_api_key
+EMAIL_FROM=EKAM <no-reply@yourdomain.com>
+
+# ----- Frontend / links -----
+FRONTEND_URL=http://localhost:3000
+# Public base for uploaded-file links (set to your ngrok URL so remote judges can open
+# PDFs). Empty ⇒ falls back to the request host.
+PUBLIC_BASE_URL=
+UPLOAD_DIR=uploads
+
+# ----- Captcha (Cloudflare Turnstile, public registration) -----
+# Empty ⇒ captcha verification is DISABLED (fine for dev/demo). Set in prod.
+TURNSTILE_SECRET_KEY=
+```
 
 ---
 
-## 💪 Strengths of the Project
+## 🔌 API Overview
 
-EKAM is strong in:
-- full-stack system integration
-- AI and backend orchestration
-- optimization modeling
-- ML-based evaluation integrity
-- modular backend design
-- multi-role product flow
+All routes are served under the `API_V1_STR` prefix (e.g. `/api/v1`). Each router owns
+its own sub-prefix. Highlights:
 
-This is not just a collection of APIs. It is a coordinated event management engine.
+```text
+# AI / Event OS (no internal prefix → /ai/*)
+POST   /ai/chat                      # design/iterate the event in chat
+GET    /ai/events, /ai/events/{hash} # AI-created events
+
+# Core
+GET/POST  /events, /events/{id}      # events; GET /events/{id}/features (flags)
+GET/POST  /rounds                    # rounds (+ scoring/anonymous/live/quiz flags)
+GET/POST  /participants, /teams, /judges
+POST      /teams/{id}/upload-csv     # team roster import (+ sample-csv)
+GET/POST  /submissions, /evaluations
+GET/POST  /rubrics, /themes
+
+# Event OS features
+GET/POST  /matches/...               # bracket: generate, get, PATCH (score→advance), CSV links
+GET/POST  /quiz/...                  # bank upload/paste, generate papers, my-paper,
+                                     #   team paper (+answers), AI auto-grade
+
+# Orchestration & comms
+GET       /pipeline/...              # dynamic pipeline state + advance
+GET/POST  /approvals/...             # the human-in-the-loop gate (approve/reject/revise)
+GET/POST  /emails/..., /notifications/...
+GET       /leaderboard/{event_id}
+GET/POST  /anomalies/..., /reports/...
+GET       /dashboard/...             # per-role dashboards
+GET       /stream/...                # Server-Sent Events (live bracket/pipeline)
+
+# Public (unauthenticated)
+GET/POST  /public/register/{hash}    # the public registration page
+```
+
+Auth: organizers use **Firebase** (no `/auth/signup` password flow); participants and
+judges use **OTP / magic-link** per event.
+
+---
+
+## 📚 Documentation
+
+In-repo deep dives (kept current):
+
+- **`expectation.md`** — full behavior runbook: states, what advances them, every edge
+  case, and failure/recovery.
+- **`ai_expect.md`** — what to expect per event type, end-to-end.
+- **`.vscode/study/current_database.md`** — every table explained.
+- **`.vscode/study/current_backend_map.md`** — all routers / services / schemas.
+- **`.vscode/study/current_ai_system.md`** — the complete AI pipeline.
+- **`.vscode/study/current_features.md`** — full feature list by role.
+- **`.vscode/study/current_challenges_learnings.md`** — what was hard and what we learned.
+- **`.vscode/study/current_diagrams.md`** — ASCII diagrams (ER, DFDs, flows, orchestration).
+
+---
+
+## 🧪 Dev: AI regression harness
+
+Prompt edits to the AI agent can silently break extraction, so there's a harness:
+
+```bash
+cd backend
+python scripts/eval_blueprints.py
+```
+
+It feeds 10 event descriptions (the 7 known types + unknowns like debate/MUN/scholarship,
+using synonyms) through the extractor and prints each resulting blueprint + validation
+verdict + derived flags (quiz / bracket / anonymous / auto / live). It runs without a DB
+and degrades gracefully without an LLM key. (It also catches infra issues — e.g. a
+decommissioned fallback model emptying results when Gemini is busy.)
+
+---
+
+## ⚠️ Good to know (operational notes)
+
+- **Gemini free tier = 20 requests/day per key.** Use `GEMINI_API_KEYS` (separate
+  projects) to multiply it, or a paid key. On a 429/503 the client rotates keys, then
+  falls back to Groq.
+- **Keep LLM model ids current.** A decommissioned model in the fallback chain silently
+  empties results — the AI looks "dumb" but it's an infra issue.
+- **Clock skew breaks Firebase auth** — a 401 "Token used too early" means the server
+  clock drifted; sync it.
+- **A background scheduler** sweeps every 60s to disqualify non-submitters past a
+  deadline (idempotent, best-effort).
+- **Remote judges:** set `PUBLIC_BASE_URL` to your ngrok URL so uploaded PDFs open.
 
 ---
 
 ## 🔮 Future Improvements
 
-- semantic plagiarism detection using embeddings
-- richer explainability for anomaly detection
-- real-time constraint tuning UI for organizers
-- deeper analytics dashboards
-- production-grade observability and logging
-- background job queue for heavy tasks
-- stronger file processing and storage abstraction
-
----
-
-## 🎯 Who This Project Is For
-
-EKAM is especially relevant for:
-- hackathon organizers
-- university event platforms
-- coding competitions
-- multi-round evaluations
-- applied AI and systems engineering showcases
-
-It also makes a strong portfolio project for:
-- backend engineering roles
-- applied ML roles
-- AI systems internships
-- research projects involving orchestration, optimization, or automation
-
----
-
-## 🌟 Why This Project Is Portfolio-Strong
-
-EKAM demonstrates more than one technical skill. It combines:
-
-- backend architecture
-- API design
-- database modeling
-- RBAC and auth
-- optimization
-- applied ML
-- LLM integration
-- workflow automation
-- product thinking
-
-That combination makes it a strong representation of **systems thinking**, not just implementation.
+- Paid/tier-1 LLM to remove the free-tier daily ceiling.
+- Sectioned extraction (separate small calls) if single-call extraction quality regresses.
+- Richer quiz auto-grading (open-ended, partial credit).
+- Semantic (embedding-based) plagiarism detection.
+- Deeper analytics dashboards and production observability.
+- Background job queue for heavy tasks.
 
 ---
 
 ## Final Note
 
-EKAM was built as an attempt to rethink event management as an **intelligent orchestration problem** rather than a simple dashboard problem.
-
-The interesting part is not just that it has AI features.  
-The interesting part is that **AI, ML, optimization, and backend workflows are all connected into one coherent system**.
+EKAM rethinks event management as an **intelligent orchestration problem**. The
+interesting part isn't that it has AI features — it's that **AI (extraction), Python
+(guarantees), optimization (CP-SAT), ML (integrity), and human approvals** are wired
+into one coherent engine that runs *any* event format from a plain-English description.

@@ -14,6 +14,7 @@ import type { Event } from "@/types";
 import Navbar from "@/components/layout/Navbar";
 import { EventStatusBadge } from "@/components/ui/Badge";
 import TeamDetailModal from "@/components/ui/TeamDetailModal";
+import RefereeBracketCard from "@/components/bracket/RefereeBracketCard";
 
 interface EventSection {
   event: Event;
@@ -159,8 +160,13 @@ export default function JudgeAssignmentsPage() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
             {sections.map(({ event, assignments }, si) => {
-              const rounds = groupByRound(assignments);
-              const pendingCount = assignments.filter(
+              // Bracket rounds are scored through the referee bracket card below,
+              // not via a submission — exclude them from the submission rows so the
+              // judge isn't shown "awaiting submission" for a live match.
+              const submissionAssignments = assignments.filter((a) => !a.is_bracket);
+              const hasBracket = assignments.some((a) => a.is_bracket);
+              const rounds = groupByRound(submissionAssignments);
+              const pendingCount = submissionAssignments.filter(
                 (a) => a.submission_id && !a.already_evaluated
               ).length;
 
@@ -202,9 +208,11 @@ export default function JudgeAssignmentsPage() {
 
                   {/* Rounds + teams */}
                   {rounds.length === 0 ? (
+                    hasBracket ? null : (
                     <div style={{ padding: "1.25rem", color: "rgba(255,255,255,0.3)", fontSize: "0.875rem" }}>
                       No team assignments yet for this event.
                     </div>
+                    )
                   ) : (
                     rounds.map((round, ri) => (
                       <div key={round.round_name + ri}>
@@ -280,6 +288,12 @@ export default function JudgeAssignmentsPage() {
                       </div>
                     ))
                   )}
+
+                  {/* Tournament referee: score the bracket matches (renders only
+                      when this event has a bracket). */}
+                  <div style={{ padding: "0 1.25rem 1.25rem" }}>
+                    <RefereeBracketCard eventId={event.id} />
+                  </div>
                 </motion.div>
               );
             })}
