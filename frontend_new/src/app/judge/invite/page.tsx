@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { Zap, CheckCircle, XCircle, Star, Hash, Mail } from "lucide-react";
@@ -15,7 +15,7 @@ import Link from "next/link";
 
 type Stage = "loading" | "pending" | "responding" | "accepted" | "declined" | "error" | "already_responded";
 
-export default function JudgeInvitePage() {
+function JudgeInviteContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token");
 
@@ -307,5 +307,13 @@ export default function JudgeInvitePage() {
         </div>
       </motion.div>
     </div>
+  );
+}
+
+export default function JudgeInvitePage() {
+  return (
+    <Suspense fallback={null}>
+      <JudgeInviteContent />
+    </Suspense>
   );
 }
