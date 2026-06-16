@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Zap, CheckCircle, XCircle } from "lucide-react";
@@ -15,6 +15,14 @@ import Link from "next/link";
 type Status = "verifying" | "success" | "error";
 
 export default function PortalLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <PortalLoginContent />
+    </Suspense>
+  );
+}
+
+function PortalLoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { refreshProfile } = useAuth();

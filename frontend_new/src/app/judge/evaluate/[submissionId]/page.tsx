@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { ArrowLeft, Star, CheckCircle, ExternalLink, FileText, Sparkles } from "lucide-react";
@@ -15,6 +15,14 @@ import Navbar from "@/components/layout/Navbar";
 import QuizGradeCard from "@/components/quiz/QuizGradeCard";
 
 export default function EvaluatePage() {
+  return (
+    <Suspense fallback={null}>
+      <EvaluateContent />
+    </Suspense>
+  );
+}
+
+function EvaluateContent() {
   const { submissionId } = useParams<{ submissionId: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
