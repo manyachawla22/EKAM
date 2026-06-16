@@ -12,6 +12,7 @@ uniqueness, team-size, captcha. ATS scoring + resume parsing are best-effort and
 never block a submission.
 """
 
+import io
 import time
 from collections import defaultdict, deque
 from typing import Any, List, Optional
@@ -31,8 +32,7 @@ from app.models.team import Team as TeamModel, TeamMember as TeamMemberModel
 from app.services.file_storage import (
     store_pdf,
     validate_pdf,
-    public_base_url,
-    local_path_for_url,
+    read_pdf_bytes,
 )
 from app.services import resume_service, ats_service, captcha_service
 from app.services.registration_validation import validate_required, extract_identity
@@ -147,10 +147,10 @@ async def _participant_count(db: AsyncSession, event_id) -> int:
 def _ats_for(resume_url: str, event: EventModel) -> Optional[float]:
     """Re-read the stored resume and score it. Best-effort; None on any failure."""
     try:
-        path = local_path_for_url(resume_url)
-        if not path:
+        data = read_pdf_bytes(resume_url)
+        if not data:
             return None
-        text = resume_service.extract_text(path)
+        text = resume_service.extract_text(io.BytesIO(data))
         return ats_service.score(text, event)
     except Exception:
         return None
@@ -302,11 +302,11 @@ async def upload_resume(
 
     contents = await file.read()
     validate_pdf(file.content_type, contents)
-    stored = store_pdf(contents, file.filename, public_base_url(str(request.base_url)))
+    stored = store_pdf(contents, file.filename)
 
     prefill: dict = {}
     try:
-        text = resume_service.extract_text(stored["path"])
+        text = resume_service.extract_text(io.BytesIO(contents))
         prefill = await resume_service.parse_resume(text, event.registration_form_fields or [])
     except Exception as exc:  # parsing must never block the upload
         print(f"[public] resume parse failed: {exc}")

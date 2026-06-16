@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # ----- Frontend URL for magic links -----
     FRONTEND_URL: str = "https://ekam-kohl.vercel.app/"
 
+    # storage config
+    SUPABASE_URL: str
+    SUPABASE_SERVICE_ROLE_KEY: str
+    # Storage bucket where submission/resume PDFs live. Must be PUBLIC so the
+    # unauthenticated "open in a new tab" links keep working for remote judges.
+    SUPABASE_BUCKET: str = "submissions"
+
     # ----- Captcha (public registration page, Task 6) -----
     # Cloudflare Turnstile secret. When empty, captcha verification is DISABLED
     # (dev/demo without keys still works); set it in prod to enforce.
@@ -63,12 +70,11 @@ class Settings(BaseSettings):
     TURNSTILE_VERIFY_URL: str = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
     # ----- File storage / submissions -----
-    # Local directory (relative to the backend working dir) where uploaded
-    # submission files (PDFs) are stored.
+    # DEPRECATED: submission/resume PDFs now live in Supabase Storage (see
+    # SUPABASE_BUCKET above). These remain only so a legacy .env doesn't error
+    # and for the one-off uploads/ → bucket migration script. Safe to remove
+    # once no local uploads/ directory needs migrating.
     UPLOAD_DIR: str = "uploads"
-    # Public base URL used to build absolute links to uploaded files. Set this
-    # to your ngrok URL (e.g. https://abc123.ngrok-free.app) so remote judges
-    # can open submissions. When empty, links fall back to the request host.
     PUBLIC_BASE_URL: str = ""
 
     @property

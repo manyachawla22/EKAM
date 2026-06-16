@@ -10,10 +10,9 @@ from fastapi import (
     status,
     UploadFile,
     File,
-    Request,
     HTTPException,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -34,21 +33,15 @@ from app.services.submission_service import (
     get_submission_service,
 )
 from app.services.file_storage import (
-    SUBMISSIONS_DIR,
     store_pdf,
     validate_pdf,
-    public_base_url,
 )
+from app.services import supabase_storage
 
 router = APIRouter(
     prefix="/submissions",
     tags=["Submissions"],
 )
-
-
-def _public_base_url(request: Request) -> str:
-    """Base URL used to build absolute links to uploaded files (see file_storage)."""
-    return public_base_url(str(request.base_url))
 
 
 @router.post(
@@ -57,41 +50,31 @@ def _public_base_url(request: Request) -> str:
     dependencies=[Depends(require_actor_type(["participant"]))],
 )
 async def upload_submission_file(
-    request: Request,
     file: UploadFile = File(...),
     auth: AuthContext = Depends(require_actor_type(["participant"])),
 ):
     """Upload a single PDF for a submission.
 
-    The file is stored on the local machine and a public URL is returned. The
+    The file is stored in Supabase Storage and its public URL is returned. The
     participant then includes that URL (alongside any GitHub/demo links) in the
     submission's `attachments` via POST /submissions/upload.
     """
     contents = await file.read()
     validate_pdf(file.content_type, contents)
-    stored = store_pdf(contents, file.filename, _public_base_url(request))
+    stored = store_pdf(contents, file.filename)
     return {"url": stored["url"], "filename": stored["filename"], "name": stored["name"]}
 
 
 @router.get("/files/{stored_name}")
 async def download_submission_file(stored_name: str):
-    """Serve an uploaded submission PDF.
+    """Back-compat shim for legacy links.
 
-    Intentionally unauthenticated: links are opened in a new browser tab (which
-    would not carry the auth header) and the filename is an unguessable UUID.
+    Files now live in Supabase Storage and are served from the bucket's public
+    URL. Any old `…/submissions/files/<name>` link that still reaches this backend
+    is redirected to the corresponding Supabase object.
     """
     safe = os.path.basename(stored_name)
-    path = os.path.join(SUBMISSIONS_DIR, safe)
-    if safe != stored_name or not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="File not found")
-
-    # Drop the uuid prefix when suggesting a download name.
-    download_name = safe.split("_", 1)[1] if "_" in safe else safe
-    return FileResponse(
-        path,
-        media_type="application/pdf",
-        filename=download_name,
-    )
+    return RedirectResponse(supabase_storage.public_url(safe))
 
 
 @router.post(

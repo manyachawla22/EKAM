@@ -1,9 +1,13 @@
-"""Shared PDF storage helper.
+"""Shared PDF storage helper (Supabase Storage).
 
-Extracted from routers/submissions.py so both the (auth-gated) submission upload
-and the (public) resume upload write files the same way: PDF-only, ≤25 MB, stored
-under uploads/submissions/ with an unguessable uuid-prefixed name, and served
-unauthenticated from /submissions/files/{name}.
+Both the (auth-gated) submission upload and the (public) resume upload write
+files the same way: PDF-only, ≤25 MB, uploaded to the Supabase `submissions`
+bucket under an unguessable uuid-prefixed object name, and served from the
+bucket's public object URL.
+
+Previously these PDFs lived on the local disk under uploads/submissions/ and were
+served through ngrok at /submissions/files/{name}; that is gone. `read_pdf_bytes`
+re-fetches a stored PDF for server-side reuse (resume ATS scoring, quiz grading).
 """
 
 import os
@@ -12,23 +16,11 @@ import uuid
 
 from fastapi import HTTPException, status
 
-from app.core.config import settings
+from app.services import supabase_storage
 
-
-# Where uploaded PDFs live on the local machine (shared with submissions).
-SUBMISSIONS_DIR = os.path.join(settings.UPLOAD_DIR, "submissions")
 
 ALLOWED_CONTENT_TYPES = {"application/pdf"}
 MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB
-
-
-def public_base_url(request_base_url: str | None = None) -> str:
-    """Base URL for absolute file links. Prefers settings.PUBLIC_BASE_URL (ngrok),
-    falling back to the host the request came in on."""
-    configured = (settings.PUBLIC_BASE_URL or "").strip().rstrip("/")
-    if configured:
-        return configured
-    return (request_base_url or "").rstrip("/")
 
 
 def safe_name(filename: str) -> str:
@@ -59,37 +51,28 @@ def validate_pdf(content_type: str | None, contents: bytes) -> None:
         )
 
 
-def store_pdf(contents: bytes, filename: str, base_url: str) -> dict:
-    """Persist a validated PDF and return {url, filename (stored), name (display), path}.
+def store_pdf(contents: bytes, filename: str) -> dict:
+    """Upload a validated PDF to Supabase Storage.
 
-    The stored name is uuid-prefixed (unguessable) so the unauthenticated download
-    endpoint can serve it by link only.
+    Returns {url, filename (stored object name), name (display name)}. The stored
+    name is uuid-prefixed (unguessable) so the public bucket link is link-only.
     """
-    os.makedirs(SUBMISSIONS_DIR, exist_ok=True)
-
     display_name = safe_name(filename)
     stored_name = f"{uuid.uuid4().hex}_{display_name}"
-    stored_path = os.path.join(SUBMISSIONS_DIR, stored_name)
-
-    with open(stored_path, "wb") as out:
-        out.write(contents)
-
-    url = (
-        f"{base_url}{settings.API_V1_STR}/submissions/files/{stored_name}"
-    )
-    return {"url": url, "filename": stored_name, "name": display_name, "path": stored_path}
+    url = supabase_storage.upload(stored_name, contents)
+    return {"url": url, "filename": stored_name, "name": display_name}
 
 
-def local_path_for_url(url: str) -> str | None:
-    """Map a stored-file URL (…/submissions/files/<name>) back to its local path,
-    if the file exists. Used to re-read a resume for ATS scoring. Returns None
-    for anything that isn't a known local upload."""
-    if not url:
+def read_pdf_bytes(url_or_name: str | None) -> bytes | None:
+    """Re-fetch a stored PDF's bytes from Supabase, given its public URL or its
+    object name. Used to re-read a resume/answer PDF for scoring. Returns None for
+    anything that isn't a known stored file (e.g. a GitHub/demo link)."""
+    if not url_or_name:
         return None
-    marker = "/submissions/files/"
-    idx = url.find(marker)
-    if idx == -1:
+    name = supabase_storage.object_name_from_url(url_or_name)
+    if name is None:
+        # Already a bare object name (no recognizable URL markers)?
+        name = url_or_name if "/" not in url_or_name else None
+    if not name:
         return None
-    name = os.path.basename(url[idx + len(marker):].split("?")[0])
-    path = os.path.join(SUBMISSIONS_DIR, name)
-    return path if os.path.isfile(path) else None
+    return supabase_storage.download(name)

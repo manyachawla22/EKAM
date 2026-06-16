@@ -13,7 +13,7 @@ feature degrades gracefully when the LLM is unavailable. Never raises.
 
 import json
 import re
-from typing import Any
+from typing import Any, BinaryIO, Union
 
 import pdfplumber
 
@@ -25,11 +25,13 @@ PHONE_RE = re.compile(r"(\+?\d[\d\s\-()]{8,}\d)")
 LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[^\s)]+", re.I)
 
 
-def extract_text(path: str) -> str:
-    """Extract text from a PDF resume. Returns '' on any failure."""
+def extract_text(source: Union[str, BinaryIO]) -> str:
+    """Extract text from a PDF resume. `source` may be a filesystem path or a
+    binary file-like object (e.g. io.BytesIO of bytes fetched from Supabase).
+    Returns '' on any failure."""
     try:
         parts: list[str] = []
-        with pdfplumber.open(path) as pdf:
+        with pdfplumber.open(source) as pdf:
             for page in pdf.pages:
                 parts.append(page.extract_text() or "")
         return "\n".join(parts).strip()

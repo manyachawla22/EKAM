@@ -333,24 +333,24 @@ async def ai_grade_submission(db: AsyncSession, round_id, team_id, submission) -
     question to have a correct_answer (open questions are left for a human)."""
     from app.services import llm_client
     from app.services.resume_service import extract_text
+    from app.services.file_storage import read_pdf_bytes
+    import io
     import json
-    import os
-    from app.core.config import settings
 
     paper = await get_paper_for_team(db, round_id, team_id, include_answers=True)
     questions = [q for q in paper["questions"] if q.get("correct_answer")]
     if not questions:
         return {"graded": False, "reason": "No questions have answer keys to auto-check."}
 
-    # Pull text out of the uploaded answer file (PDF → text; else skip).
+    # Pull text out of the uploaded answer PDF (fetched from Supabase Storage;
+    # non-PDF attachments like GitHub/demo links are skipped).
     answer_text = ""
     for att in (getattr(submission, "attachments", None) or []):
-        path = att
-        if isinstance(att, str) and att.startswith("http"):
-            # stored as a URL → map back to the local upload path if possible
-            path = os.path.join(settings.UPLOAD_DIR, os.path.basename(att.split("?")[0]))
-        if isinstance(path, str) and os.path.exists(path) and path.lower().endswith(".pdf"):
-            answer_text += extract_text(path) + "\n"
+        if not isinstance(att, str) or not att.split("?")[0].lower().endswith(".pdf"):
+            continue
+        data = read_pdf_bytes(att)
+        if data:
+            answer_text += extract_text(io.BytesIO(data)) + "\n"
     if not answer_text.strip():
         return {"graded": False, "reason": "Could not read the answer file (PDF text not found)."}
 
