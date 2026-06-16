@@ -1,5 +1,7 @@
 # 🚀 EKAM — AI Event Operating System
 
+ https://ekam-kohl.vercel.app/
+
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-336791)
