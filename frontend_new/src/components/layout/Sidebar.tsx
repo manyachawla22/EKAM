@@ -20,6 +20,7 @@ import {
   AlertTriangle,
   Award,
   GitBranch,
+  FileText,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useEventStream } from "@/lib/useEventStream";
@@ -51,6 +52,7 @@ function getNavItems(role: string | null, eventId?: string, profile?: { event_id
         { label: "Bracket", href: `/organizer/events/${eventId}/bracket`, icon: <GitBranch size={16} /> },
         { label: "Approvals", href: `/organizer/events/${eventId}/approvals`, icon: <ShieldCheck size={16} />, glowKey: "approvals" },
         { label: "Anomalies", href: `/organizer/events/${eventId}/anomalies`, icon: <AlertTriangle size={16} />, glowKey: "anomalies" },
+        { label: "Plagiarism", href: `/organizer/events/${eventId}/plagiarism`, icon: <FileText size={16} /> },
         { label: "Reports", href: `/organizer/events/${eventId}/reports`, icon: <BarChart2 size={16} /> }
       );
     }

@@ -98,42 +98,35 @@ export function getSessionKind(): SessionKind | null {
 // ─── Auth Headers ─────────────────────────────────────────────────────────────
 
 export async function getAuthHeaders(): Promise<HeadersInit> {
-  // Prefer the EKAM JWT (issued locally by the backend) over the Firebase
-  // ID token. The Firebase token is only used to obtain the JWT during the
-  // initial login call.
   const ekam = getEkamToken();
   if (ekam) {
     return {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${ekam}`,
     };
   }
-  // This tab logged in as a participant/judge (OTP/magic-link). Never fall back
-  // to the shared Firebase identity — doing so would send their requests as the
-  // organizer. Better an honest unauthenticated request (clean 401) than acting
-  // as the wrong actor. (Firebase is shared per-origin; the EKAM token is per-tab.)
+
   if (getSessionKind() === "ekam") {
-    return { "Content-Type": "application/json" };
+    return {};
   }
-  // Make sure Firebase has restored any persisted session before reading
-  // currentUser, so requests fired during app startup still carry a token.
+
   try {
     await auth.authStateReady();
   } catch {
     // Older SDKs without authStateReady — fall through.
   }
+
   const user = auth.currentUser;
   if (!user) {
-    return { "Content-Type": "application/json" };
+    return {};
   }
+
   try {
     const token = await user.getIdToken();
     return {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     };
   } catch {
-    return { "Content-Type": "application/json" };
+    return {};
   }
 }
 
@@ -143,21 +136,20 @@ async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const headers = await getAuthHeaders();
+  const authHeaders = await getAuthHeaders();
+  const isFormData = options.body instanceof FormData;
+
   const init: RequestInit = {
     ...options,
     headers: {
-      ...headers,
+      ...authHeaders,
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(options.headers || {}),
     },
   };
+
   const url = `${API_BASE}${path}`;
 
-  // A bare `fetch` rejection (TypeError: Failed to fetch) means the request
-  // never reached the server — typically the dev backend briefly dropping the
-  // connection while uvicorn --reload restarts, or a transient network blip.
-  // Since the server never processed the request, retrying once is safe even
-  // for POST/PUT. This removes the "failed first, worked on the second click".
   let response: Response;
   try {
     response = await fetch(url, init);
@@ -172,9 +164,6 @@ async function apiFetch<T>(
       const errorData = (await response.json()) as {
         detail?: unknown;
       };
-      // FastAPI returns `detail` as a string for HTTPException but as an
-      // array of {loc, msg, type, ...} objects for 422 validation errors.
-      // Without this normalization the UI shows "[object Object]".
       const d = errorData.detail;
       if (typeof d === "string") {
         errorMessage = d;
@@ -195,12 +184,11 @@ async function apiFetch<T>(
         errorMessage = JSON.stringify(d);
       }
     } catch {
-      // body wasn't JSON — keep the default message
+      // body wasn't JSON
     }
     throw new Error(`${errorMessage} (${response.status})`);
   }
 
-  // Handle empty responses (204 No Content)
   if (response.status === 204) {
     return {} as T;
   }
@@ -652,7 +640,28 @@ export async function listReports(eventId: string): Promise<Report[]> {
 export async function generateEventReport(eventId: string): Promise<Report> {
   return apiFetch<Report>(`/reports/${eventId}/generate`, { method: "POST" });
 }
+export async function manualPlagiarismCheck(
+  eventId: string,
+  file1: File,
+  file2: File,
+  threshold = 0.75
+): Promise<Report> {
+  const formData = new FormData();
+  formData.append("file_1", file1);
+  formData.append("file_2", file2);
+  formData.append("threshold", String(threshold));
 
+  return apiFetch<Report>(`/reports/manual-plagiarism/${eventId}`, {
+    method: "POST",
+    body: formData,
+    headers: {}, // important if apiFetch normally injects JSON content-type
+  });
+}
+
+export async function listManualPlagiarismReports(eventId: string): Promise<Report[]> {
+  const reports = await listReports(eventId);
+  return reports.filter((r) => r.type === "manual_plagiarism");
+}
 // ─── AI ───────────────────────────────────────────────────────────────────────
 
 export async function aiChat(

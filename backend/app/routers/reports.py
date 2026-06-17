@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.services.plagiarism_service import manual_plagiarism_check_service
 from app.core.auth_context import AuthContext
 from app.core.database import get_db
 from app.middleware.auth import require_actor_type, require_event_access
@@ -16,7 +16,7 @@ from app.services.ml_anomaly_report_service import analyze_evaluation
 from app.services.participant_performance_report_service import (
     generate_participant_performance_report_service,
 )
-from app.services.plagiarism_service import detect_plagiarism_service
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from app.services.report_service import (
     create_report_service,
     list_reports_service,
@@ -92,7 +92,7 @@ async def detect_anomaly_scores(
 
 
 @router.post(
-    "/detect-plagiarism/{event_id}",
+    "/manual-plagiarism/{event_id}",
     response_model=ReportSchema,
     status_code=status.HTTP_201_CREATED,
     dependencies=[
@@ -100,17 +100,20 @@ async def detect_anomaly_scores(
         Depends(require_event_access("event_id")),
     ],
 )
-async def detect_plagiarism(
+async def manual_plagiarism_check(
     event_id: UUID,
-    threshold: float = 0.8,
+    file_1: UploadFile = File(...),
+    file_2: UploadFile = File(...),
+    threshold: float = Form(0.75),
     db: AsyncSession = Depends(get_db),
 ):
-    return await detect_plagiarism_service(
+    return await manual_plagiarism_check_service(
         db=db,
-        event_id=str(event_id),
+        event_id=event_id,
+        file_1=file_1,
+        file_2=file_2,
         threshold=threshold,
     )
-
 
 @router.get(
     "/participant/{event_id}/{participant_id}",
